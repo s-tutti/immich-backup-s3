@@ -19,28 +19,51 @@ sudo mkdir -p "$OUT_DIR"
 sudo chmod 700 "$OUT_DIR"
 
 # === CA ===
+# IAM Roles Anywhere requires the trust anchor cert to have:
+#   basicConstraints=critical,CA:TRUE
+#   keyUsage=keyCertSign,cRLSign
+# Without these the create-trust-anchor call returns
+# "Incorrect basic constraints for CA certificate".
 if [[ ! -f "$OUT_DIR/ca-cert.pem" ]]; then
     echo "Generating CA (days=$CA_DAYS)"
     sudo openssl req -x509 -newkey rsa:4096 \
         -keyout "$OUT_DIR/ca-key.pem" -out "$OUT_DIR/ca-cert.pem" \
         -days "$CA_DAYS" -nodes \
-        -subj "/CN=ImmichBackupCA"
+        -subj "/CN=ImmichBackupCA" \
+        -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -addext "subjectKeyIdentifier=hash"
 else
     echo "CA already exists at $OUT_DIR/ca-cert.pem (skipping)."
 fi
 
 # === Client cert ===
+# IAM Roles Anywhere wants leaf certs with extendedKeyUsage=clientAuth and
+# basicConstraints=CA:FALSE.
 if [[ ! -f "$OUT_DIR/cert.pem" ]]; then
     echo "Generating client cert for CN=$HOST_CN (days=$CERT_DAYS)"
     sudo openssl req -newkey rsa:4096 \
         -keyout "$OUT_DIR/key.pem" -out "$OUT_DIR/csr.pem" \
         -nodes -subj "/CN=$HOST_CN"
+
+    EXT=$(mktemp)
+    cat > "$EXT" <<'EXTEOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=clientAuth
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid,issuer
+EXTEOF
+
     sudo openssl x509 -req \
         -in "$OUT_DIR/csr.pem" \
         -CA "$OUT_DIR/ca-cert.pem" -CAkey "$OUT_DIR/ca-key.pem" \
         -CAcreateserial \
         -out "$OUT_DIR/cert.pem" \
-        -days "$CERT_DAYS"
+        -days "$CERT_DAYS" \
+        -extfile "$EXT"
+
+    rm -f "$EXT"
     sudo rm -f "$OUT_DIR/csr.pem"
 fi
 
