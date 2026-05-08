@@ -20,6 +20,11 @@ fi
 : "${SLACK_WEBHOOK_URL:?}"
 : "${AWS_REGION:?}"
 
+for cmd in zip aws; do
+    command -v "$cmd" >/dev/null 2>&1 \
+        || { echo "Missing tool: $cmd  (try: sudo apt install -y $cmd)" >&2; exit 1; }
+done
+
 LAMBDA_NAME="ImmichBackupMonitor"
 LAMBDA_ROLE_NAME="ImmichBackupMonitorRole"
 POLICY_NAME="ImmichBackupMonitorPolicy"

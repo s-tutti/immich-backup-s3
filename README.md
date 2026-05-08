@@ -167,7 +167,11 @@ sudo ./server-setup/02_generate_certs.sh         # /etc/aws/{ca-cert,ca-key,cert
 管理マシンに必要なものは最小限：
 
 - AWS CLI v2
-- admin 権限の AWS クレデンシャル
+- admin 権限の AWS クレデンシャル（`[default]` プロファイル or 環境変数）
+- `jq`（04 で使用）, `zip`（05 で Lambda 関数を packaging するのに使用）
+  ```bash
+  sudo apt install -y jq zip awscli   # awscli は v2 を別途入れるならスキップ
+  ```
 - このリポジトリのチェックアウト
 - `.env`（`S3_BUCKET` / `AWS_REGION` / `GITHUB_REPO` / `SLACK_WEBHOOK_URL` だけ埋まっていれば 00–06 全部動く。`UPLOAD_LOCATION` 等のサーバー固有パスは未使用なので空でも可）
 
