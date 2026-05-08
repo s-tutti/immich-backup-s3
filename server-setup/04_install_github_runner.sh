@@ -18,9 +18,18 @@ PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
 : "${GITHUB_REPO:?GITHUB_REPO not set in .env}"
 : "${GITHUB_RUNNER_TOKEN:?GITHUB_RUNNER_TOKEN not set (one-shot, get it from repo Settings → Actions → Runners → New)}"
 
-RUNNER_USER="${RUNNER_USER:-gh-runner}"
-RUNNER_HOME="${RUNNER_HOME:-/opt/actions-runner}"
+# Default to the existing 'immich' user (also runs the cron backup jobs).
+# /usr/sbin/nologin is fine — systemd / sudo -u don't need a login shell.
+RUNNER_USER="${RUNNER_USER:-immich}"
 DEPLOY_TARGET="${DEPLOY_TARGET:-/opt/immich-backup-s3}"
+
+# Resolve the user's home dynamically so we don't override an existing user's home.
+if id "$RUNNER_USER" >/dev/null 2>&1; then
+    USER_HOME=$(getent passwd "$RUNNER_USER" | cut -d: -f6)
+else
+    USER_HOME="/home/$RUNNER_USER"
+fi
+RUNNER_HOME="${RUNNER_HOME:-$USER_HOME/actions-runner}"
 
 # 1) Resolve latest runner version (or pin via env)
 if [[ -z "${RUNNER_VERSION:-}" ]]; then
@@ -29,23 +38,25 @@ if [[ -z "${RUNNER_VERSION:-}" ]]; then
 fi
 echo "Runner version: $RUNNER_VERSION"
 
-# 2) Runner user (system account, no shell login)
+# 2) Runner user. If $RUNNER_USER doesn't exist, create as a system account.
+#    If it exists (e.g. 'immich'), reuse it as-is — don't touch its home or shell.
 if ! id "$RUNNER_USER" >/dev/null 2>&1; then
-    sudo useradd --system --create-home --home-dir "$RUNNER_HOME" \
-        --shell /bin/bash --comment "GitHub Actions runner" "$RUNNER_USER"
+    sudo useradd --system --create-home --home-dir "$USER_HOME" \
+        --shell /bin/bash --comment "Self-hosted runner" "$RUNNER_USER"
 fi
 
-# 3) Deploy target (writable by runner)
-sudo mkdir -p "$DEPLOY_TARGET"
-sudo chown "$RUNNER_USER:$RUNNER_USER" "$DEPLOY_TARGET"
-# Other users (e.g. the cron user) need read+execute to run scripts from here.
-sudo chmod 0755 "$DEPLOY_TARGET"
+# 3) Runner install dir (under the user's home so SSH/awscli config naturally
+#    co-locates).
+sudo install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0750 "$RUNNER_HOME"
 
-# 4) Install dependencies the runner uses
+# 4) Deploy target. Same user as the runner = same user as cron, so 0750 is enough.
+sudo install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0750 "$DEPLOY_TARGET"
+
+# 5) Install dependencies the runner uses
 sudo apt-get update -qq
 sudo apt-get install -y rsync curl jq unzip libicu-dev
 
-# 5) Download + configure runner (skip if already configured)
+# 6) Download + configure runner (skip if already configured)
 sudo -u "$RUNNER_USER" -H bash <<EOSCRIPT
 set -euo pipefail
 cd "$RUNNER_HOME"
@@ -69,7 +80,7 @@ else
 fi
 EOSCRIPT
 
-# 6) systemd service (svc.sh writes /etc/systemd/system/actions.runner.*)
+# 7) systemd service (svc.sh writes /etc/systemd/system/actions.runner.*)
 cd "$RUNNER_HOME"
 if ! systemctl list-unit-files | grep -q "^actions.runner\."; then
     sudo ./svc.sh install "$RUNNER_USER"
@@ -90,8 +101,7 @@ echo "Logs:          sudo journalctl -u $SVC_NAME -f"
 echo ""
 echo "Next:"
 echo "  1. After the first deploy run, place secrets in:"
-echo "       $DEPLOY_TARGET/.env"
+echo "       $DEPLOY_TARGET/.env  (owner: $RUNNER_USER, mode 0600)"
 echo "     This file is excluded from rsync, so it survives subsequent deploys."
-echo "  2. If a different user (e.g. immich-backup) will run the cron jobs,"
-echo "     ensure it can read $DEPLOY_TARGET (chmod 0755 already covers that)"
-echo "     and read $DEPLOY_TARGET/.env (chown to that user, mode 0600)."
+echo "  2. Install the cron entries as the same user:"
+echo "       sudo crontab -u $RUNNER_USER $DEPLOY_TARGET/cron/immich-backup.crontab"

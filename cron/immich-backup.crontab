@@ -1,8 +1,12 @@
 # Immich → S3 backup schedule.
 # Times are server local time. Verify with `timedatectl` (set to JST or your TZ).
 # Install with:
-#   crontab /opt/immich-backup-s3/cron/immich-backup.crontab
-# Or merge into your existing crontab via `crontab -e`.
+#   sudo crontab -u immich /opt/immich-backup-s3/cron/immich-backup.crontab
+# Verify:
+#   sudo crontab -u immich -l
+#
+# Note: the log file must be writable by the cron user. One-time setup:
+#   sudo install -o immich -g immich -m 0644 /dev/null /var/log/immich-backup.log
 
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
