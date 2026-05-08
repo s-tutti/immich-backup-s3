@@ -136,7 +136,23 @@ sudo ./server-setup/02_generate_certs.sh         # /etc/aws/{ca-cert,ca-key,cert
 
 ### 2. AWS 側：admin 権限のある環境で順番に実行
 
-`AWS_PROFILE` を一時的に admin プロファイルに切り替えて実行する想定。
+`aws-setup/` 配下のスクリプトは IAM ロール作成・OIDC プロバイダ作成・Lambda 作成など **admin 権限が必要**。
+
+`.env` の `AWS_PROFILE=immich-backup` は **runtime 用**（IAM Roles Anywhere の短命クレデンシャル取得プロファイル）で bootstrap には使えない。各スクリプトは `.env` を source した後、**呼び出し元が事前に `AWS_PROFILE` を export していなければ `unset`、していれば尊重** するようになっている。
+
+#### admin クレデンシャルの渡し方（どれか1つ）
+
+```bash
+# A. [default] プロファイルに admin keys を入れている場合
+./aws-setup/00_bootstrap_ci.sh
+
+# B. 別名 (admin など) の admin プロファイルを使う場合
+AWS_PROFILE=admin ./aws-setup/00_bootstrap_ci.sh
+# 事前 export した AWS_PROFILE は .env の値より優先される
+
+# C. 環境変数で admin keys を渡す場合
+AWS_ACCESS_KEY_ID=AKIA... AWS_SECRET_ACCESS_KEY=... ./aws-setup/00_bootstrap_ci.sh
+```
 
 ```bash
 # 1. S3 バケット作成 + パブリックアクセス全ブロック + SSE-S3

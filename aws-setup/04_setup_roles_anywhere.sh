@@ -9,7 +9,17 @@ set -euo pipefail
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
+# Bootstrap scripts need admin AWS credentials. The runtime AWS_PROFILE in
+# .env (immich-backup, used by cron) only has minimal permissions, so we ignore
+# whatever .env sets for AWS_PROFILE. Anything the user exported BEFORE running
+# this script is preserved (so "AWS_PROFILE=admin ./00_bootstrap_ci.sh" works).
+PRE_AWS_PROFILE="${AWS_PROFILE:-}"
 [[ -f "$PROJECT_ROOT/.env" ]] && source "$PROJECT_ROOT/.env"
+if [[ -n "$PRE_AWS_PROFILE" ]]; then
+    export AWS_PROFILE="$PRE_AWS_PROFILE"
+else
+    unset AWS_PROFILE
+fi
 
 : "${ROLE_ARN:?ROLE_ARN not set (run 03_create_iam_role.sh first)}"
 : "${CA_CERT_PATH:?CA_CERT_PATH not set in .env}"
