@@ -101,6 +101,19 @@ fi
 
 rm -rf "$WORK"
 
+# 3) CloudWatch Logs retention. Lambda creates the log group on first invocation,
+#    but we pre-create it here so retention applies from day one. Without this,
+#    logs accumulate indefinitely (and eventually leave the Free Tier 5 GB).
+LOG_GROUP="/aws/lambda/$LAMBDA_NAME"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-30}"
+aws logs create-log-group --log-group-name "$LOG_GROUP" \
+    --region "$AWS_REGION" 2>/dev/null || true
+aws logs put-retention-policy \
+    --log-group-name "$LOG_GROUP" \
+    --retention-in-days "$LOG_RETENTION_DAYS" \
+    --region "$AWS_REGION"
+echo "Log retention: $LOG_GROUP → ${LOG_RETENTION_DAYS} days"
+
 LAMBDA_ARN=$(aws lambda get-function --function-name "$LAMBDA_NAME" \
     --region "$AWS_REGION" --query 'Configuration.FunctionArn' --output text)
 echo "✓ Lambda deployed: $LAMBDA_ARN"
