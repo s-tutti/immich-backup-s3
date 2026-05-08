@@ -123,6 +123,31 @@ sudo $EDITOR /opt/immich-backup-s3/.env   # S3_BUCKET, GITHUB_REPO 等を書く
 
 `.env` は `.gitignore` 済み + rsync の `--exclude` 対象なので、Actions のデプロイで上書きされない。
 
+#### Slack Incoming Webhook URL の取得
+
+`SLACK_WEBHOOK_URL` には Slack の **Incoming Webhook URL**（`https://hooks.slack.com/services/Txxx/Bxxx/yyy` の形式）を入れる。バックアップ通知（成功/失敗）と日次の死活監視 Lambda が、このエンドポイントへ HTTPS POST で投稿する。
+
+1. **Slack App を作成** — <https://api.slack.com/apps> → `Create New App` → `From scratch`
+   - App Name: 任意（例: `Immich Backup Notifier`）
+   - Workspace: 通知を流したい Slack ワークスペースを選択
+2. **Incoming Webhooks を有効化** — 作成した App の左メニュー → `Incoming Webhooks` → トグルを `On`
+3. **チャネル指定で URL を発行** — 同ページ下部 `Add New Webhook to Workspace` → 通知先チャネルを選択 → `Allow`
+4. 戻ってきた画面の `Webhook URL` 欄をコピー
+5. `.env` に貼り付け：
+   ```bash
+   export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T.../B.../..."
+   ```
+6. 動作確認（curl で投稿してみる）：
+   ```bash
+   source /opt/immich-backup-s3/.env
+   curl -fsS -X POST -H 'Content-Type: application/json' \
+     --data '{"text":"webhook 接続テスト :white_check_mark:"}' \
+     "$SLACK_WEBHOOK_URL"
+   ```
+   選択したチャネルにメッセージが流れれば OK。
+
+> ⚠️ **URL は事実上の認証情報**（知っている人なら誰でもチャネルに投稿できる）。`.env` は 0600 で管理し、git にコミットしない。GH Actions では repo secrets に登録する（後述）。漏洩したら Slack App 設定画面から `Revoke` して新しい URL を発行する。
+
 ### 1. サーバー側：依存パッケージ + 証明書
 
 ```bash
