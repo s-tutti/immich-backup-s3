@@ -94,14 +94,16 @@ cmd_extract() {
             --recursive --profile "$AWS_PROFILE"
     done
 
+    # The backup writer concatenates two tar archives per backup (media + db/config),
+    # so we need -i (--ignore-zeros) to read past the inter-archive zero blocks.
     echo "==> Extract full"
     cat "${RESTORE_DIR}/full_${full}"/part_* \
-        | tar --listed-incremental=/dev/null -xvf - -C "$TARGET_DIR"
+        | tar -ixvf - -C "$TARGET_DIR"
 
     for inc in "${incs[@]}"; do
         echo "==> Extract incremental $inc"
         cat "${RESTORE_DIR}/inc_${inc}"/part_* \
-            | tar --listed-incremental=/dev/null -xvf - -C "$TARGET_DIR"
+            | tar -ixvf - -C "$TARGET_DIR"
     done
 
     echo

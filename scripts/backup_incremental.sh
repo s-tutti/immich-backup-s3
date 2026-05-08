@@ -1,5 +1,7 @@
 #!/bin/bash
-# Incremental backup: uses the existing snapshot file as the baseline.
+# Incremental backup: uploads files modified since the last successful backup.
+# Always includes a fresh pg_dumpall and config (DB cannot be reliably
+# differentiated logically).
 set -euo pipefail
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
@@ -13,7 +15,8 @@ source "$SCRIPT_DIR/backup_common.sh"
 : "${PG_CONTAINER:?}" "${PG_USER:?}"
 
 DATE=$(date -u +%Y%m%dT%H%M%SZ)
-SNAPSHOT="$SNAPSHOT_DIR/snapshot.snar"
+MARKER="$SNAPSHOT_DIR/last_backup_time"
+NEW_MARKER="$SNAPSHOT_DIR/.last_backup_time.tmp"
 DUMP="$BACKUP_TMPDIR/db_${DATE}.sql"
 
 mkdir -p "$BACKUP_TMPDIR" "$SNAPSHOT_DIR"
@@ -22,6 +25,7 @@ cleanup_tmp() {
     rm -f "$BACKUP_TMPDIR"/tar_pipe.* 2>/dev/null || true
     rm -f "$DUMP" 2>/dev/null || true
     rm -f "$BACKUP_TMPDIR"/part_* 2>/dev/null || true
+    rm -f "$NEW_MARKER" 2>/dev/null || true
 }
 
 on_error() {
@@ -32,17 +36,21 @@ on_error() {
 }
 trap on_error ERR
 
-if [[ ! -f "$SNAPSHOT" ]]; then
-    echo "ERROR: snapshot file missing ($SNAPSHOT). Run a full backup first." >&2
-    notify "incremental" "$DATE" "0" "FAILED" "snapshot missing" || true
+if [[ ! -f "$MARKER" ]]; then
+    echo "ERROR: marker file missing ($MARKER). Run a full backup first." >&2
+    notify "incremental" "$DATE" "0" "FAILED" "marker missing" || true
     exit 1
 fi
 
+rm -f "$NEW_MARKER"
+touch "$NEW_MARKER"
+
 dump_postgres "$DUMP"
 
-PARTS=$(stream_tar_split_upload "incremental" "$DATE" "$SNAPSHOT")
+PARTS=$(stream_tar_split_upload "incremental" "$DATE" "$MARKER")
 
-cp "$SNAPSHOT" "${SNAPSHOT}.bak"
+mv -f "$NEW_MARKER" "$MARKER"
+cp "$MARKER" "${MARKER}.bak"
 
 cleanup_tmp
 

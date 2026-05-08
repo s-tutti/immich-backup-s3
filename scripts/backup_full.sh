@@ -1,5 +1,6 @@
 #!/bin/bash
-# Full backup: resets the snapshot file and uploads everything in scope.
+# Full backup: tars everything in scope and uploads as Glacier Deep Archive chunks.
+# Records a timestamp marker so subsequent incrementals know what is new.
 set -euo pipefail
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
@@ -13,7 +14,8 @@ source "$SCRIPT_DIR/backup_common.sh"
 : "${PG_CONTAINER:?}" "${PG_USER:?}"
 
 DATE=$(date -u +%Y%m%dT%H%M%SZ)
-SNAPSHOT="$SNAPSHOT_DIR/snapshot.snar"
+MARKER="$SNAPSHOT_DIR/last_backup_time"
+NEW_MARKER="$SNAPSHOT_DIR/.last_backup_time.tmp"
 DUMP="$BACKUP_TMPDIR/db_${DATE}.sql"
 
 mkdir -p "$BACKUP_TMPDIR" "$SNAPSHOT_DIR"
@@ -22,6 +24,7 @@ cleanup_tmp() {
     rm -f "$BACKUP_TMPDIR"/tar_pipe.* 2>/dev/null || true
     rm -f "$DUMP" 2>/dev/null || true
     rm -f "$BACKUP_TMPDIR"/part_* 2>/dev/null || true
+    rm -f "$NEW_MARKER" 2>/dev/null || true
 }
 
 on_error() {
@@ -32,16 +35,19 @@ on_error() {
 }
 trap on_error ERR
 
-# A full backup starts a new incremental chain.
-rm -f "$SNAPSHOT"
+# Snapshot the cutoff *before* the backup runs. Anything modified during the
+# backup window will be picked up by the next incremental (find -newer).
+rm -f "$NEW_MARKER"
+touch "$NEW_MARKER"
 
 dump_postgres "$DUMP"
 
-PARTS=$(stream_tar_split_upload "full" "$DATE" "$SNAPSHOT")
+PARTS=$(stream_tar_split_upload "full" "$DATE" "$MARKER")
 
-# Keep a local copy of the snapshot so a single corrupted file doesn't break
-# the next incremental chain.
-cp "$SNAPSHOT" "${SNAPSHOT}.bak"
+# Install the new marker on success. Full ignored the old one anyway, but we
+# need a baseline for the next incremental.
+mv -f "$NEW_MARKER" "$MARKER"
+cp "$MARKER" "${MARKER}.bak"
 
 cleanup_tmp
 
