@@ -16,7 +16,10 @@ CERT_DAYS="${CERT_DAYS:-365}"
 HOST_CN="${HOST_CN:-$(hostname)}"
 
 sudo mkdir -p "$OUT_DIR"
-sudo chmod 700 "$OUT_DIR"
+# Directory itself is world-traversable (0755). Files inside are protected by
+# their own permissions (private keys 0600/0640, public certs 0644). 0700 here
+# would block both immich's read of key.pem AND scp of the public ca-cert.pem.
+sudo chmod 0755 "$OUT_DIR"
 
 # === CA ===
 # IAM Roles Anywhere requires the trust anchor cert to have:
