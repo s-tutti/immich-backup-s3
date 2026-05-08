@@ -1,0 +1,40 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "S3LifecycleManagement",
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutLifecycleConfiguration",
+                "s3:GetLifecycleConfiguration"
+            ],
+            "Resource": "arn:aws:s3:::BUCKET_NAME"
+        },
+        {
+            "Sid": "LambdaUpdate",
+            "Effect": "Allow",
+            "Action": [
+                "lambda:UpdateFunctionCode",
+                "lambda:UpdateFunctionConfiguration",
+                "lambda:GetFunction",
+                "lambda:GetFunctionConfiguration"
+            ],
+            "Resource": "arn:aws:lambda:*:*:function:ImmichBackupMonitor"
+        },
+        {
+            "Sid": "EventBridgeUpdate",
+            "Effect": "Allow",
+            "Action": [
+                "scheduler:UpdateSchedule",
+                "scheduler:GetSchedule"
+            ],
+            "Resource": "arn:aws:scheduler:*:*:schedule/default/ImmichBackupDailyMonitor"
+        },
+        {
+            "Sid": "ReadIamRolesForArnLookup",
+            "Effect": "Allow",
+            "Action": ["iam:GetRole"],
+            "Resource": "arn:aws:iam::*:role/ImmichBackup*"
+        }
+    ]
+}
