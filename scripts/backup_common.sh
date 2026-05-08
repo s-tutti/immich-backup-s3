@@ -21,7 +21,7 @@ stream_tar_split_upload() {
     local snapshot=$3
     local prefix="${backup_type}/${date}"
 
-    local pipe="$TMPDIR/tar_pipe.$$"
+    local pipe="$BACKUP_TMPDIR/tar_pipe.$$"
     [[ -e "$pipe" ]] && rm -f "$pipe"
     mkfifo "$pipe"
 
@@ -35,7 +35,7 @@ stream_tar_split_upload() {
             --exclude='./.backup_state' \
             -cf "$pipe" \
             -C "$UPLOAD_LOCATION" . \
-            -C "$TMPDIR" "db_${date}.sql" \
+            -C "$BACKUP_TMPDIR" "db_${date}.sql" \
             -C "$COMPOSE_DIR" docker-compose.yml .env
     ) &
     local tar_pid=$!
@@ -43,7 +43,7 @@ stream_tar_split_upload() {
     local i=0
     local total_size=0
     while :; do
-        local part="$TMPDIR/part_$(printf '%03d' "$i")"
+        local part="$BACKUP_TMPDIR/part_$(printf '%03d' "$i")"
 
         # iflag=fullblock prevents short reads from a FIFO; without it dd
         # may stop early at any pipe write boundary.

@@ -136,7 +136,16 @@ sudo ./server-setup/02_generate_certs.sh         # /etc/aws/{ca-cert,ca-key,cert
 
 ### 2. AWS 側：admin 権限のある環境で順番に実行
 
-`aws-setup/` 配下のスクリプトは IAM ロール作成・OIDC プロバイダ作成・Lambda 作成など **admin 権限が必要**。
+`aws-setup/` 配下のスクリプトは IAM ロール作成・OIDC プロバイダ作成・Lambda 作成など **admin 権限が必要**。Immich サーバーでなく、**手元の管理用マシンから実行するのが推奨**（admin クレデンシャルを Immich サーバー上に置く必要がない）。
+
+管理マシンに必要なものは最小限：
+
+- AWS CLI v2
+- admin 権限の AWS クレデンシャル
+- このリポジトリのチェックアウト
+- `.env`（`S3_BUCKET` / `AWS_REGION` / `GITHUB_REPO` / `SLACK_WEBHOOK_URL` だけ埋まっていれば 00–06 全部動く。`UPLOAD_LOCATION` 等のサーバー固有パスは未使用なので空でも可）
+
+`04_setup_roles_anywhere.sh` のみ `CA_CERT_PATH` の PEM ファイルを参照するので、そのときだけ `/etc/aws/ca-cert.pem` を Immich サーバーから管理マシンへコピーするか、Immich サーバー上で 04 だけ実行する。
 
 `.env` の `AWS_PROFILE=immich-backup` は **runtime 用**（IAM Roles Anywhere の短命クレデンシャル取得プロファイル）で bootstrap には使えない。各スクリプトは `.env` を source した後、**呼び出し元が事前に `AWS_PROFILE` を export していなければ `unset`、していれば尊重** するようになっている。
 

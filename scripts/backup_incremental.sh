@@ -8,20 +8,20 @@ PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
 source "$SCRIPT_DIR/backup_common.sh"
 
 : "${S3_BUCKET:?}" "${UPLOAD_LOCATION:?}" "${COMPOSE_DIR:?}"
-: "${TMPDIR:?}" "${SNAPSHOT_DIR:?}" "${AWS_PROFILE:?}"
+: "${BACKUP_TMPDIR:?}" "${SNAPSHOT_DIR:?}" "${AWS_PROFILE:?}"
 : "${PARALLEL:?}" "${CHUNK_SIZE_MB:?}"
 : "${PG_CONTAINER:?}" "${PG_USER:?}"
 
 DATE=$(date -u +%Y%m%dT%H%M%SZ)
 SNAPSHOT="$SNAPSHOT_DIR/snapshot.snar"
-DUMP="$TMPDIR/db_${DATE}.sql"
+DUMP="$BACKUP_TMPDIR/db_${DATE}.sql"
 
-mkdir -p "$TMPDIR" "$SNAPSHOT_DIR"
+mkdir -p "$BACKUP_TMPDIR" "$SNAPSHOT_DIR"
 
 cleanup_tmp() {
-    rm -f "$TMPDIR"/tar_pipe.* 2>/dev/null || true
+    rm -f "$BACKUP_TMPDIR"/tar_pipe.* 2>/dev/null || true
     rm -f "$DUMP" 2>/dev/null || true
-    rm -f "$TMPDIR"/part_* 2>/dev/null || true
+    rm -f "$BACKUP_TMPDIR"/part_* 2>/dev/null || true
 }
 
 on_error() {

@@ -141,7 +141,7 @@
 set -euo pipefail
 
 # === 設定 ===
-TMPDIR=/mnt/hdd1/.backup_tmp
+BACKUP_TMPDIR=/mnt/hdd1/.backup_tmp
 SNAPSHOT_DIR=/mnt/hdd1/.backup_state
 BUCKET=my-immich-backup
 DATE=$(date -u +%Y%m%dT%H%M%SZ)
@@ -150,14 +150,14 @@ PARALLEL=2
 CHUNK_SIZE_MB=102400         # 100 GiB
 COMPOSE_DIR=/home/tutti/immich
 
-mkdir -p "$TMPDIR" "$SNAPSHOT_DIR"
+mkdir -p "$BACKUP_TMPDIR" "$SNAPSHOT_DIR"
 
 # AWS CLI の multipart 設定（100GB オブジェクトはデフォルト 8MB チャンクだと
 # 上限 10,000 parts に当たるため、100MB に拡張しておく）
 aws configure set default.s3.multipart_chunksize 100MB
 
 # === PostgreSQL ダンプ ===
-DUMP="$TMPDIR/db_${DATE}.sql"
+DUMP="$BACKUP_TMPDIR/db_${DATE}.sql"
 docker exec -t immich_postgres pg_dumpall -U postgres > "$DUMP"
 
 # === フルなのでスナップショットを初期化 ===
@@ -165,7 +165,7 @@ SNAPSHOT="$SNAPSHOT_DIR/snapshot.snar"
 rm -f "$SNAPSHOT"
 
 # === 名前付きパイプ ===
-PIPE="$TMPDIR/tar_pipe"
+PIPE="$BACKUP_TMPDIR/tar_pipe"
 [[ -p "$PIPE" ]] || mkfifo "$PIPE"
 
 # === tar をバックグラウンドで起動 ===
@@ -176,7 +176,7 @@ PIPE="$TMPDIR/tar_pipe"
         --exclude='./backups' \
         -cf "$PIPE" \
         -C /mnt/hdd1 ./library ./upload ./profile \
-        -C "$TMPDIR" "$(basename "$DUMP")" \
+        -C "$BACKUP_TMPDIR" "$(basename "$DUMP")" \
         -C "$COMPOSE_DIR" docker-compose.yml .env
 ) &
 TAR_PID=$!
@@ -184,7 +184,7 @@ TAR_PID=$!
 # === dd で 100GB ずつ切り出し → 並列アップロード ===
 i=0
 while :; do
-    PART="$TMPDIR/part_$(printf '%03d' $i)"
+    PART="$BACKUP_TMPDIR/part_$(printf '%03d' $i)"
     # iflag=fullblock 必須（pipe からの短い read を防ぐ）
     dd if="$PIPE" of="$PART" bs=1M count="$CHUNK_SIZE_MB" iflag=fullblock 2>/dev/null || true
     if [[ ! -s "$PART" ]]; then
