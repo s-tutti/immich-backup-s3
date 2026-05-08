@@ -44,8 +44,13 @@ if [[ ! -f "$OUT_DIR/cert.pem" ]]; then
     sudo rm -f "$OUT_DIR/csr.pem"
 fi
 
-sudo chmod 600 "$OUT_DIR"/*.pem
 sudo chown root:root "$OUT_DIR"/*.pem
+# Private keys: root-only.
+sudo chmod 600 "$OUT_DIR/ca-key.pem" "$OUT_DIR/key.pem"
+# Public certs: world-readable. ca-cert.pem in particular needs to be portable
+# (copy to the admin machine to register as the IAM Roles Anywhere trust anchor).
+# cert.pem also needs read access for the operational user — see README "B. 権限の整備".
+sudo chmod 644 "$OUT_DIR/ca-cert.pem" "$OUT_DIR/cert.pem"
 
 echo ""
 echo "✓ Certs ready:"

@@ -74,11 +74,12 @@ cat /home/immich/.ssh/id_ed25519.pub
 # pg_dumpall を docker exec 経由で叩くため、docker グループに追加
 sudo usermod -aG docker immich
 
-# AWS 証明書を immich が読めるように
-#   ※ 02_generate_certs.sh が出力した /etc/aws/{cert,key}.pem に対して
-sudo chgrp immich /etc/aws/cert.pem /etc/aws/key.pem
-sudo chmod 0640   /etc/aws/cert.pem /etc/aws/key.pem
-# CA 鍵 (ca-key.pem) は root 専用のまま (0600 root:root)
+# AWS 証明書: クライアント秘密鍵 (key.pem) を immich が読めるように
+#   ※ 02_generate_certs.sh が ca-cert.pem / cert.pem は 0644、ca-key.pem / key.pem は
+#     0600 で root 所有として作成する。key.pem だけ immich が読めるよう緩める。
+sudo chgrp immich /etc/aws/key.pem
+sudo chmod 0640   /etc/aws/key.pem
+# ca-key.pem (CA 秘密鍵) は root 専用のまま — Immich サーバー外には出さない
 
 # バックアップ用一時領域・スナップショット領域
 sudo install -d -o immich -g immich -m 0700 /mnt/hdd1/.backup_tmp
@@ -145,7 +146,15 @@ sudo ./server-setup/02_generate_certs.sh         # /etc/aws/{ca-cert,ca-key,cert
 - このリポジトリのチェックアウト
 - `.env`（`S3_BUCKET` / `AWS_REGION` / `GITHUB_REPO` / `SLACK_WEBHOOK_URL` だけ埋まっていれば 00–06 全部動く。`UPLOAD_LOCATION` 等のサーバー固有パスは未使用なので空でも可）
 
-`04_setup_roles_anywhere.sh` のみ `CA_CERT_PATH` の PEM ファイルを参照するので、そのときだけ `/etc/aws/ca-cert.pem` を Immich サーバーから管理マシンへコピーするか、Immich サーバー上で 04 だけ実行する。
+`04_setup_roles_anywhere.sh` のみ `CA_CERT_PATH` の PEM ファイルを参照するので、Immich サーバー側で `server-setup/02_generate_certs.sh` を先に走らせて CA を作っておき、`ca-cert.pem` を管理マシンへ持ってくる：
+
+```bash
+# 管理マシン側
+ssh tutti@<immich-server> 'sudo cat /etc/aws/ca-cert.pem' > ca-cert.pem
+# .env で CA_CERT_PATH を ./ca-cert.pem に書き換えてから 04 を実行
+```
+
+`ca-cert.pem` は公開証明書なので外部持ち出し OK。`ca-key.pem`（CA 秘密鍵）は **絶対に Immich サーバー外へ出さない**（Roles Anywhere の Trust Anchor 登録には不要）。
 
 `.env` の `AWS_PROFILE=immich-backup` は **runtime 用**（IAM Roles Anywhere の短命クレデンシャル取得プロファイル）で bootstrap には使えない。各スクリプトは `.env` を source した後、**呼び出し元が事前に `AWS_PROFILE` を export していなければ `unset`、していれば尊重** するようになっている。
 
