@@ -1,0 +1,18 @@
+# Immich → S3 backup schedule.
+# Times are server local time. Verify with `timedatectl` (set to JST or your TZ).
+# Install with:
+#   crontab /home/tutti/repos/immich-backup-s3/cron/immich-backup.crontab
+# Or merge into your existing crontab via `crontab -e`.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/home/tutti/immich-backup.log
+
+# Full backup: 1/1 and 7/1 at 03:00 local.
+0 3 1 1,7 * /home/tutti/repos/immich-backup-s3/scripts/backup_full.sh        >> $LOG 2>&1
+
+# Incremental: every Sunday at 03:00 local.
+# (Skip the Sunday that immediately follows a full to avoid noise; both running
+# the same week is harmless thanks to the snapshot file, but the full leaves
+# nothing for the incremental to do.)
+0 3 * * 0   /home/tutti/repos/immich-backup-s3/scripts/backup_incremental.sh >> $LOG 2>&1

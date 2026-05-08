@@ -1,0 +1,10 @@
+.env
+*.pem
+*.key
+*.snar
+*.snar.bak
+/tmp/
+*.log
+__pycache__/
+*.pyc
+.claude/

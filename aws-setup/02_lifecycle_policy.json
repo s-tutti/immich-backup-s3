@@ -1,0 +1,16 @@
+{
+    "Rules": [
+        {
+            "ID": "ExpireIncrementalsAfter180Days",
+            "Status": "Enabled",
+            "Filter": {"Prefix": "incremental/"},
+            "Expiration": {"Days": 180}
+        },
+        {
+            "ID": "AbortIncompleteMultipartUploads",
+            "Status": "Enabled",
+            "Filter": {"Prefix": ""},
+            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
+        }
+    ]
+}
