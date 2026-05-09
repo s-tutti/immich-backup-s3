@@ -64,15 +64,24 @@ stream_tar_split_upload() {
     ) > "$pipe" &
     local tar_pid=$!
 
+    # CRITICAL: keep an extra reader on the FIFO open in this shell so the
+    # writer (tar) doesn't get SIGPIPE between dd invocations. Without this
+    # holder fd, when a dd finishes its 100 GiB read and exits, the read-side
+    # refcount briefly drops to zero; tar's next write then triggers SIGPIPE
+    # and tar dies, silently truncating the archive. We saw this in practice:
+    # 387 GB of media became a 100 GiB part_000 + 67 MB part_001 (only the
+    # second tar's db+compose output got through after the first tar died).
+    exec 3< "$pipe"
+
     local i=0
     local total_size=0
     while :; do
         local part="$BACKUP_TMPDIR/part_$(printf '%03d' "$i")"
 
-        # iflag=fullblock prevents short reads from a FIFO; without it dd
-        # may stop early at any pipe write boundary.
-        dd if="$pipe" of="$part" bs=1M count="$CHUNK_SIZE_MB" \
-            iflag=fullblock 2>/dev/null || true
+        # Read from the held-open fd 3 (not by re-opening the FIFO each time).
+        # iflag=fullblock prevents short reads from a FIFO.
+        dd of="$part" bs=1M count="$CHUNK_SIZE_MB" \
+            iflag=fullblock 2>/dev/null <&3 || true
 
         if [[ ! -s "$part" ]]; then
             rm -f "$part"
@@ -98,6 +107,10 @@ stream_tar_split_upload() {
 
         i=$((i + 1))
     done
+
+    # Close the holder fd before final wait. Now any pending writer can finish
+    # cleanly with EOF semantics.
+    exec 3<&-
 
     wait "$tar_pid"
     wait
