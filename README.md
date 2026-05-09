@@ -380,6 +380,282 @@ cron は **5. cron 登録** ですでに登録済みのはず。`/opt/immich-bac
 ./scripts/restore.sh list
 ```
 
+## 復元ドリル（半年〜年 1 回推奨）
+
+「**バックアップが取れている**」と「**リストアが成功する**」は別物。S3 上のチャンクが本当に解凍可能なメディア + DB ダンプとして完成しているかを、**実際に別ディレクトリへ展開して live と照合する**作業が復元ドリル。
+
+### コスト・時間・影響
+
+| 項目 | 値 |
+|---|---|
+| AWS 費用（500 GB 規模） | **約 $36**（Bulk retrieval $1 + egress $35） |
+| 時間 | 取り出し待ち 48h + ダウンロード 数時間 + 検証 1〜2h |
+| live への影響 | **無し**（`/mnt/hdd1` も S3 バックアップも変更しない） |
+| 必要なディスク空き | 復元先 + 展開ステージング = **約 800 GB** |
+
+### Phase 1: 差分チェーンを作る（フル直後で差分がまだ無い場合）
+
+ドリル本番でフル + 差分の連鎖を検証するため、事前に差分を 1〜2 回回しておく。
+
+#### 1-a. cron を一時停止（時間が被ると面倒なので）
+
+```bash
+sudo crontab -u immich -l | sudo tee /tmp/immich-cron.bak > /dev/null
+sudo crontab -u immich -r
+```
+
+#### 1-b. live ファイルの mtime を更新（差分に乗せる対象を作る）
+
+```bash
+# 適当な既存ファイルを 1〜2 個 touch（中身は変えず mtime だけ更新）
+sudo -u immich touch /mnt/hdd1/library/<some-existing-file>
+```
+
+該当ファイルが何なのか後で照合するので、**フルパスをメモ**しておく。
+
+#### 1-c. 1 回目の差分
+
+```bash
+tmux new -s immich-incr
+sudo -u immich -H /opt/immich-backup-s3/scripts/backup_incremental.sh
+# Slack に SUCCESS を確認 → Ctrl+b → d でデタッチ
+```
+
+S3 に `incremental/<TIMESTAMP_INC1>/` が作られる。`TIMESTAMP_INC1` を控える。
+
+#### 1-d. もう 1 ファイル touch して 2 回目の差分
+
+```bash
+sudo -u immich touch /mnt/hdd1/library/<another-file>
+sudo -u immich -H /opt/immich-backup-s3/scripts/backup_incremental.sh
+```
+
+`TIMESTAMP_INC2` を控える。
+
+### Phase 2: S3 上の構造サニティ（無料の事前チェック）
+
+```bash
+# 管理マシン側 (admin AWS creds 使用)
+unset AWS_PROFILE
+source /home/tutti/repos/immich-backup-s3/.env
+
+aws s3 ls "s3://$S3_BUCKET/full/"
+aws s3 ls "s3://$S3_BUCKET/incremental/"
+
+# 各 manifest の中身を確認（Standard クラスなので即読める）
+for prefix in $(aws s3 ls "s3://$S3_BUCKET/full/" | awk '{print $2}') \
+              $(aws s3 ls "s3://$S3_BUCKET/incremental/" | awk '{print $2}'); do
+    echo "=== $prefix ==="
+    aws s3 cp "s3://$S3_BUCKET/${prefix}manifest.json" - 2>/dev/null && echo
+done
+```
+
+各 manifest の `parts` 数 と、対応 prefix のオブジェクト数 - 1（manifest を除く）が一致することを確認。
+
+### Phase 3: 取り出しリクエスト（Bulk = 48h 待ち）
+
+直近フル + その後の差分すべての timestamp を控えて、Glacier Deep Archive から取り出しを依頼：
+
+```bash
+# Immich サーバー側
+FULL=20260509T130000Z              # ←直近フルのタイムスタンプ
+INC1=20260509T180000Z              # ←Phase 1-c のタイムスタンプ
+INC2=20260509T200000Z              # ←Phase 1-d のタイムスタンプ
+
+sudo -u immich -H bash -c "
+    source /opt/immich-backup-s3/.env
+    RETRIEVAL_TIER=Bulk \
+    /opt/immich-backup-s3/scripts/restore.sh request '$FULL' '$INC1' '$INC2'
+"
+```
+
+`Bulk`（$0.0025/GB、48h 待ち）と `Standard`（$0.02/GB、12h 待ち）が選択可。年 1 回のドリルなら Bulk で十分。
+
+### Phase 4: 取り出し完了の確認
+
+48h 経過後、各オブジェクトが取り出し済になっているか確認：
+
+```bash
+unset AWS_PROFILE
+aws s3api head-object --bucket "$S3_BUCKET" \
+    --key "full/$FULL/part_000" \
+    --query 'Restore' --output text
+# → "ongoing-request=\"false\", expiry-date=\"...\""
+#    ongoing-request が "false" になっていれば取り出し完了
+```
+
+全パーツについてループで確認したいなら：
+
+```bash
+for key in $(aws s3 ls "s3://$S3_BUCKET/full/$FULL/" | awk '{print $4}'); do
+    [[ -z "$key" ]] && continue
+    [[ "$key" == "manifest.json" ]] && continue
+    state=$(aws s3api head-object --bucket "$S3_BUCKET" \
+        --key "full/$FULL/$key" --query 'Restore' --output text)
+    echo "$key: $state"
+done
+```
+
+すべて `ongoing-request="false"` なら次へ進む。
+
+### Phase 5: ダウンロード + 展開
+
+復元先の専用ディレクトリを準備（live を絶対に汚染しないよう、`/mnt/hdd1` 以外の場所を強く推奨）：
+
+```bash
+# 800 GB 程度の空きがあるパスを選ぶ。/mnt/hdd1 上に置くなら別ディレクトリ。
+sudo install -d -o immich -g immich -m 0755 \
+    /mnt/hdd1_drill_target /mnt/hdd1_drill_staging
+```
+
+tmux で展開（数時間かかる）：
+
+```bash
+tmux new -s immich-drill
+sudo -u immich -H bash -c "
+    source /opt/immich-backup-s3/.env
+    RESTORE_DIR=/mnt/hdd1_drill_staging \
+    TARGET_DIR=/mnt/hdd1_drill_target \
+    /opt/immich-backup-s3/scripts/restore.sh extract '$FULL' '$INC1' '$INC2'
+"
+# Ctrl+b → d でデタッチして気長に待つ
+```
+
+完了後の予想構造：
+
+```
+/mnt/hdd1_drill_target/
+├── library/
+├── upload/
+├── profile/
+├── db_<TIMESTAMP_INC2>.sql   ← 最新の差分の DB ダンプ（最新状態）
+├── db_<TIMESTAMP_INC1>.sql   ← 差分1 時点の DB ダンプ（古い、上書きされず併存）
+├── db_<TIMESTAMP_FULL>.sql   ← フル時点の DB ダンプ
+├── docker-compose.yml
+└── .env
+```
+
+### Phase 6: 検証
+
+#### 6-a. ファイル数とサイズ比較
+
+```bash
+# 復元先
+echo "=== restored ==="
+sudo find /mnt/hdd1_drill_target -type f | wc -l
+sudo du -sh /mnt/hdd1_drill_target
+
+# live (除外を反映)
+echo "=== live (in-scope only) ==="
+sudo find /mnt/hdd1 \
+    -path /mnt/hdd1/thumbs -prune -o \
+    -path /mnt/hdd1/encoded-video -prune -o \
+    -path /mnt/hdd1/backups -prune -o \
+    -path /mnt/hdd1/.backup_tmp -prune -o \
+    -path /mnt/hdd1/.backup_state -prune -o \
+    -type f -print | wc -l
+sudo du -sb --exclude=thumbs --exclude=encoded-video --exclude=backups \
+    --exclude=.backup_tmp --exclude=.backup_state /mnt/hdd1 | numfmt --to=iec
+```
+
+両者がほぼ一致するはず（Phase 1 で touch したファイルが live にだけある分、復元先には DB ダンプ + config が余分にある分で多少ずれる）。
+
+#### 6-b. Phase 1 で touch したファイルが正しく差分に乗っていたか
+
+```bash
+# Phase 1-b と 1-d で touch したファイルが復元先に存在するか
+sudo ls -la /mnt/hdd1_drill_target/library/<file-from-1b>
+sudo ls -la /mnt/hdd1_drill_target/library/<file-from-1d>
+
+# sha256 が live と一致するか
+for f in /mnt/hdd1_drill_target/library/<file-from-1b> \
+         /mnt/hdd1_drill_target/library/<file-from-1d>; do
+    rel=${f#/mnt/hdd1_drill_target/}
+    h1=$(sudo sha256sum "$f"             | awk '{print $1}')
+    h2=$(sudo sha256sum "/mnt/hdd1/$rel" | awk '{print $1}')
+    [[ "$h1" == "$h2" ]] && echo "OK:    $rel" || echo "MISMATCH: $rel"
+done
+```
+
+両方 OK なら、差分の連鎖（フル → 差分1 → 差分2）が正しく重ね合わせられて最新状態が再構築されている証拠。
+
+#### 6-c. ランダムサンプリングで内容比較
+
+```bash
+# 復元先からランダムに 5 ファイル選んで sha256 比較
+sudo find /mnt/hdd1_drill_target/library -type f | shuf -n 5 | while read f; do
+    rel=${f#/mnt/hdd1_drill_target/}
+    live="/mnt/hdd1/$rel"
+    if [[ -f "$live" ]]; then
+        h1=$(sudo sha256sum "$f"    | awk '{print $1}')
+        h2=$(sudo sha256sum "$live" | awk '{print $1}')
+        [[ "$h1" == "$h2" ]] && echo "OK: $rel" || echo "MISMATCH: $rel"
+    else
+        echo "ONLY-IN-RESTORE: $rel"  # 削除済みでも復元される＝想定済の挙動
+    fi
+done
+```
+
+#### 6-d. DB ダンプの構文確認
+
+```bash
+LATEST_DUMP=$(sudo ls -t /mnt/hdd1_drill_target/db_*.sql | head -1)
+echo "Latest dump: $LATEST_DUMP"
+
+sudo head -10 "$LATEST_DUMP"   # PostgreSQL ヘッダコメントが見える
+sudo tail -5  "$LATEST_DUMP"   # \connect postgres で終わっているか
+sudo wc -l    "$LATEST_DUMP"   # 行数規模感
+```
+
+実際に psql で投入して整合性まで確認したいなら、別 PostgreSQL コンテナを立てて流し込む（リソース余裕がある時のみ）。
+
+#### 6-e. config ファイルの確認
+
+```bash
+sudo cat /mnt/hdd1_drill_target/docker-compose.yml | head
+sudo cat /mnt/hdd1_drill_target/.env | head
+# → Immich の本番 docker-compose の中身が見えるはず
+```
+
+### Phase 7: 後始末
+
+```bash
+# 復元先と staging を削除（S3 バックアップは絶対に消さない）
+sudo rm -rf /mnt/hdd1_drill_target /mnt/hdd1_drill_staging
+
+# cron を復元
+sudo crontab -u immich /tmp/immich-cron.bak
+sudo crontab -u immich -l   # 確認
+sudo rm /tmp/immich-cron.bak
+
+# ドリル実施日を記録
+echo "$(date -I): restore drill PASS" \
+    | sudo -u immich tee -a /home/immich/restore-drill.log
+```
+
+S3 上の取り出し結果（"ongoing-request=false" 状態）は `restore.sh request` で `--days 7` 指定済みなので、放置で 7 日後に自動的に Glacier に戻る。明示的な再凍結操作は不要。
+
+### Phase 8: マーカー無事確認
+
+ドリルの restore は marker ファイルに触らない設計なので、次回 cron 差分には影響なし。念のため：
+
+```bash
+sudo ls -la /mnt/hdd1/.backup_state/last_backup_time
+# mtime が Phase 1 の最後の差分（INC2）の時刻と一致していれば OK
+```
+
+### 失敗パターンと対処
+
+| 症状 | 原因 / 対処 |
+|---|---|
+| Phase 4 で `Restore` が `null` | `restore.sh request` 未実行か対象 key の指定漏れ。再リクエスト |
+| Phase 4 で `ongoing-request="true"` のまま 48h+ | AWS の遅延。普通もう少し待てば終わる。Standard ($0.02/GB) に切り替えて再リクエストする手も |
+| Phase 5 で `tar: Unexpected EOF` | チャンクの欠落 / ダウンロード破損。`/mnt/hdd1_drill_staging/` 配下のサイズが S3 上の sum と合うか確認 |
+| Phase 6-a でファイル数がドリル前と全然違う | 差分の concat 解釈失敗。`tar -i` フラグが付いているか `restore.sh` を確認 |
+| Phase 6-b で sha256 mismatch | 差分のファイル選別に問題。`find -newer` の判定がずれている可能性 |
+
+検出されたら GitHub Issue にして調査。
+
 ## 月額コスト目安
 
 詳細は `design.md` 6.5。500 GB 規模で **約 $0.85 / 月**。Lambda + EventBridge + LIST は AWS Free Tier の always-free 枠内で実質 $0。
