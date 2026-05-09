@@ -617,6 +617,159 @@ sudo cat /mnt/hdd1_drill_target/.env | head
 # → Immich の本番 docker-compose の中身が見えるはず
 ```
 
+### Phase 6+: Immich UI で実機検証（推奨・任意）
+
+ファイル sha256 一致 + DB ダンプ構文 OK までで「データは取り戻せる」が確認できますが、**「Immich アプリとして使える状態か」** を最後の砦として検証したいなら、**live Immich を止めずに drill 用の Immich コンテナ群を別ポートで立てる** のが安全。
+
+#### 6+a. Drill 用の docker-compose ディレクトリを作る
+
+live の compose ディレクトリを丸ごとコピーしていじる：
+
+```bash
+# live を真似してコピー (live は /home/tutti/immich-app/ の前提)
+sudo cp -r /home/tutti/immich-app /home/tutti/immich-app-drill
+cd /home/tutti/immich-app-drill
+```
+
+#### 6+b. .env を drill 用に書き換え
+
+```bash
+sudo $EDITOR /home/tutti/immich-app-drill/.env
+```
+
+最低限の変更：
+
+```bash
+# 元の .env から:
+UPLOAD_LOCATION=/mnt/hdd1               # ←変更
+DB_DATA_LOCATION=./postgres             # ←変更
+# (他はそのまま)
+
+# Drill 用に:
+UPLOAD_LOCATION=/mnt/hdd1_drill_target
+DB_DATA_LOCATION=./postgres-drill        # 新規空ディレクトリ。dumpを後で流し込む
+```
+
+#### 6+c. docker-compose.yml を drill 用に書き換え
+
+衝突回避のため以下を変更：
+
+- **container_name** を `*_drill` 系に置換（live と同名だと起動できない）
+- **ports** を host 側だけ別ポートに（例: 2283 → **2284**）
+- ML サービスは drill では不要なので止めるか削除（重い）
+
+最小編集の例：
+
+```bash
+sudo sed -i \
+    -e 's/container_name: immich_server/container_name: immich_server_drill/' \
+    -e 's/container_name: immich_machine_learning/container_name: immich_machine_learning_drill/' \
+    -e 's/container_name: immich_postgres/container_name: immich_postgres_drill/' \
+    -e 's/container_name: immich_redis/container_name: immich_redis_drill/' \
+    -e 's|2283:2283|2284:2283|' \
+    /home/tutti/immich-app-drill/docker-compose.yml
+```
+
+ML を止めるなら、該当 service を `profiles: [disabled]` でコメントアウト相当に：
+
+```bash
+# 手で編集: immich-machine-learning service の前に profiles を入れる
+#   profiles: ["never"]
+# とすると profile 無指定で起動しなくなる
+```
+
+確認：
+
+```bash
+sudo grep -E 'container_name|2283|UPLOAD' /home/tutti/immich-app-drill/docker-compose.yml
+```
+
+#### 6+d. drill 用 Postgres データディレクトリを準備
+
+```bash
+sudo install -d -o immich -g immich -m 0755 /home/tutti/immich-app-drill/postgres-drill
+```
+
+#### 6+e. Drill コンテナ起動（compose project 名を分けて namespace 隔離）
+
+```bash
+cd /home/tutti/immich-app-drill
+sudo docker compose -p immich-drill up -d
+```
+
+`-p immich-drill` でプロジェクト名（= ネットワーク名空間）を分離。live 側 (`immich`) と完全に分離されたコンテナ群として起動。
+
+確認：
+
+```bash
+sudo docker ps | grep drill
+# immich_server_drill, immich_postgres_drill, immich_redis_drill が Up になっているはず
+
+# postgres が起動完了しているか
+sudo docker exec immich_postgres_drill pg_isready -U postgres
+```
+
+#### 6+f. 復元した DB ダンプを drill Postgres に投入
+
+```bash
+LATEST_DUMP=$(sudo ls -t /mnt/hdd1_drill_target/db_*.sql | head -1)
+echo "Restoring: $LATEST_DUMP"
+
+# pg_dumpall は CREATE DATABASE 文を含むので、空 Postgres に流し込めば OK
+sudo docker exec -i immich_postgres_drill psql -U postgres < "$LATEST_DUMP"
+```
+
+エラーが出ずに完了すれば、live の DB と同じ内容が drill 側に再現された状態。
+
+#### 6+g. immich-server を再起動して DB を読み直させる
+
+```bash
+sudo docker compose -p immich-drill restart immich-server
+```
+
+数十秒待ってログ確認：
+
+```bash
+sudo docker logs immich_server_drill --tail 50
+# → 起動エラーが無いか、microservices の起動メッセージが見えるか
+```
+
+#### 6+h. ブラウザで UI 検証
+
+```
+http://<immich-server-ip>:2284
+```
+
+確認項目：
+
+- [ ] 起動して **ログインページ** が表示される
+- [ ] **既存ユーザーの ID/パスワードでログインできる**（DB ダンプから復元された認証情報が使えること = DB 整合性 OK）
+- [ ] タイムラインに **写真サムネイルが表示される**（ただし `thumbs/` を除外しているので、ジョブ未走行のタイミングでは黒抜けや「再生成中」の表示があるかも）
+- [ ] 1〜2 枚クリックして **オリジナル画像がフルサイズで開く**（= UPLOAD_LOCATION の実体ファイルが読めている）
+- [ ] アルバム・人物・タグなどメタデータも見える（= DB が機能している）
+- [ ] サムネ未生成のものは Immich のジョブ画面（管理者 → ジョブ）から **「サムネイルを生成」「ビデオを変換」** をキックしてエラーなく走るか軽く確認
+
+ここまで通れば、**「災害発生時に S3 バックアップだけから Immich を再構築できる」** が証明できたことになります。
+
+#### 6+i. drill 環境を撤収
+
+```bash
+cd /home/tutti/immich-app-drill
+sudo docker compose -p immich-drill down -v   # -v でコンテナ + ボリュームも削除
+```
+
+`-v` を付けないと匿名ボリュームが残るので注意。drill のためだけに作ったボリュームなので削除して問題なし。
+
+念のため：
+
+```bash
+# drill のコンテナが残っていないか
+sudo docker ps -a | grep drill   # 何も出ないはず
+
+# drill の compose ディレクトリも削除
+sudo rm -rf /home/tutti/immich-app-drill
+```
+
 ### Phase 7: 後始末
 
 ```bash
