@@ -58,10 +58,13 @@ def format_inventory(full_objs, inc_objs):
             continue
         for date_key in sorted(gs.keys(), reverse=True):
             g = gs[date_key]
-            total = sum(o["Size"] for o in g)
+            # Count and total only data chunks; the manifest.json is metadata
+            # written by the backup script itself, not a data part.
+            parts_only = [o for o in g if not o["Key"].endswith("/manifest.json")]
+            total = sum(o["Size"] for o in parts_only)
             latest = max(o["LastModified"] for o in g)
             lines.append(
-                f"  {date_key} : {len(g):>3d} parts, "
+                f"  {date_key} : {len(parts_only):>3d} parts, "
                 f"{total / 1e9:6.1f} GB, {latest:%Y-%m-%d %H:%M UTC}"
             )
     return "\n".join(lines)
