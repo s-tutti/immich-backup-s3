@@ -364,21 +364,65 @@ cron は **5. cron 登録** ですでに登録済みのはず。`/opt/immich-bac
 
 ## リストア
 
-`scripts/restore.sh` 参照。Glacier Deep Archive は取り出しが非同期なので二段階：
+`scripts/restore.sh` 参照。Glacier Deep Archive は取り出しが非同期なので二段階（リクエスト → 待機 → 展開）。
+
+### 災害復旧（最新状態に戻したい場合・推奨）
+
+引数なしで起動すると **「最新フル + そのフル以降の全差分」** を S3 から自動抽出して使うので、半年運用後で差分が 26 個あっても 1 行で済みます：
 
 ```bash
-# 1. 取り出しリクエスト（Standard で 12h, Bulk で 48h）
-./scripts/restore.sh request 20260101T030000Z 20260108T030000Z 20260115T030000Z
+# 0. 何が復元対象になるかプレビュー（dry-run、コストもアクションも発生しない）
+sudo -u immich -H bash -c "
+    source /opt/immich-backup-s3/.env
+    /opt/immich-backup-s3/scripts/restore.sh latest
+"
+# → "Restore chain:
+#      full/20260509T125322Z
+#      incremental/20260510T122843Z
+#      ...
+#    Total: 1 full + N incremental"
+#    内容を見て、復元したい組み合わせと一致しているか確認
 
-# 2. 取り出し完了後、ダウンロード + 展開
+# 1. 取り出しリクエスト（auto-discover、Bulk で約 $1、48h 待ち）
+sudo -u immich -H bash -c "
+    source /opt/immich-backup-s3/.env
+    RETRIEVAL_TIER=Bulk \
+    /opt/immich-backup-s3/scripts/restore.sh request
+"
+
+# 2. 48h 経過後、ダウンロード + 展開（同じ chain を auto-discover）
+sudo -u immich -H bash -c "
+    source /opt/immich-backup-s3/.env
+    /opt/immich-backup-s3/scripts/restore.sh extract
+"
+```
+
+`Standard` Tier (12h, $0.02/GB) を使いたければ `RETRIEVAL_TIER=Standard` を指定。
+
+### 過去の特定時点に戻したい場合（PITR / drill）
+
+タイムスタンプを **明示的に引数指定** することで、auto-discover を上書き：
+
+```bash
+./scripts/restore.sh request 20260101T030000Z 20260108T030000Z 20260115T030000Z
 ./scripts/restore.sh extract 20260101T030000Z 20260108T030000Z 20260115T030000Z
 ```
 
-利用可能なバックアップ一覧：
+並びは「フル（最初の引数）→ 差分（古い順）」。
 
-```bash
-./scripts/restore.sh list
-```
+### 補助コマンド
+
+| コマンド | 用途 |
+|---|---|
+| `restore.sh latest` | auto-discover が選ぶ chain をプレビュー（DR を打つ前の確認に） |
+| `restore.sh list` | バケット内の **全 prefix を生で一覧**（旧フル含む。整理確認用） |
+| `restore.sh request [<ts> ...]` | Glacier 取り出しリクエスト（auto or 明示） |
+| `restore.sh extract [<ts> ...]` | ダウンロード + tar 展開（auto or 明示） |
+
+`latest` と `list` の使い分け：
+
+- `latest`：**DR で復元される世代の組み合わせ** だけ（=「今 request したら何が取れるか」のプレビュー）
+- `list`：**バケット内の全履歴を生で**（過去のフルや、旧フル系列の差分も含む）
 
 ## 復元ドリル（半年〜年 1 回推奨）
 
