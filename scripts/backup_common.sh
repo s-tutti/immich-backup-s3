@@ -46,14 +46,21 @@ stream_tar_split_upload() {
         else
             (
                 cd "$UPLOAD_LOCATION"
-                find . -newer "$marker" \
-                    -not -path './thumbs' -not -path './thumbs/*' \
-                    -not -path './encoded-video' -not -path './encoded-video/*' \
-                    -not -path './backups' -not -path './backups/*' \
-                    -not -path './.backup_tmp' -not -path './.backup_tmp/*' \
-                    -not -path './.backup_state' -not -path './.backup_state/*' \
+                # -type f で必ずファイルだけ出力する。これを忘れると、配下に
+                # 新ファイルが追加された親ディレクトリ自体も -newer にマッチ
+                # して find の出力に出てしまい、tar がそれを再帰展開して
+                # 「古いファイルまで全部 tar に乗る」事故になる。
+                # tar 側の --no-recursion も同名の保険として置いているが、
+                # GNU tar はこれを positional option として解釈するため
+                # --files-from=- より前に置く必要がある。
+                find . -type f -newer "$marker" \
+                    -not -path './thumbs/*' \
+                    -not -path './encoded-video/*' \
+                    -not -path './backups/*' \
+                    -not -path './.backup_tmp/*' \
+                    -not -path './.backup_state/*' \
                     -print0 \
-                | tar --null --files-from=- --no-recursion -cf -
+                | tar --no-recursion --null --files-from=- -cf -
             )
         fi
 
