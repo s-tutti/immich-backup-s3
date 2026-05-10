@@ -131,3 +131,15 @@ stream_tar_split_upload() {
 notify() {
     "$SCRIPT_DIR/notify_slack.sh" "$@"
 }
+
+# Keep only the N most recent db_*.sql files in $BACKUP_TMPDIR.
+# Used at the end of each successful backup to retain a small history of
+# DB dumps without letting them accumulate indefinitely.
+prune_old_db_dumps() {
+    local keep="${1:-3}"
+    local stale
+    stale=$(ls -1t "$BACKUP_TMPDIR"/db_*.sql 2>/dev/null | tail -n +$((keep + 1)))
+    if [[ -n "$stale" ]]; then
+        echo "$stale" | xargs rm -f
+    fi
+}

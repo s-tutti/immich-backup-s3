@@ -22,14 +22,17 @@ mkdir -p "$BACKUP_TMPDIR" "$SNAPSHOT_DIR"
 
 cleanup_tmp() {
     rm -f "$BACKUP_TMPDIR"/tar_pipe.* 2>/dev/null || true
-    rm -f "$DUMP" 2>/dev/null || true
     rm -f "$BACKUP_TMPDIR"/part_* 2>/dev/null || true
     rm -f "$NEW_MARKER" 2>/dev/null || true
+    # NOTE: $DUMP is intentionally NOT removed here. We keep the last few
+    # successful dumps via prune_old_db_dumps at the end of a successful run.
+    # on_error explicitly deletes the current-run's (possibly-partial) dump.
 }
 
 on_error() {
     local code=$?
     cleanup_tmp
+    rm -f "$DUMP" 2>/dev/null || true   # current run's partial dump
     notify "full" "$DATE" "0" "FAILED" "exit=$code line=${BASH_LINENO[0]:-?}" || true
     exit "$code"
 }
@@ -50,6 +53,9 @@ mv -f "$NEW_MARKER" "$MARKER"
 cp "$MARKER" "${MARKER}.bak"
 
 cleanup_tmp
+
+# Keep only the 3 most recent db_*.sql in $BACKUP_TMPDIR.
+prune_old_db_dumps 3
 
 # Best-effort cleanup of expired old fulls (don't fail the backup if it errors).
 "$SCRIPT_DIR/cleanup_old_full.sh" "$DATE" || true
