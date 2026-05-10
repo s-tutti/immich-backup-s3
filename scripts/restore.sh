@@ -1,15 +1,22 @@
 #!/bin/bash
-# Restore template. Glacier Deep Archive retrieval is asynchronous (12 h+),
-# so this runs in two phases:
+# Restore from S3 Glacier Deep Archive backups.
 #
+# Two phases (Glacier retrieval is async, ~12-48 h):
 #   Phase 1: kick off restore-object requests
-#       restore.sh request <full-date> [<inc-date> ...]
+#   Phase 2 (after retrieval completes): download + extract
 #
-#   Phase 2 (after retrieval completes, hours later): download + extract
-#       restore.sh extract <full-date> [<inc-date> ...]
+# Disaster recovery (typical use):
+#   restore.sh request               # auto-discover latest full + all newer incrementals
+#   # ... wait 12h (Standard) or 48h (Bulk) ...
+#   restore.sh extract               # auto-discover same chain, download + extract
 #
-# Both phases take the same arguments. Run them in chronological order
-# (full first, then each incremental in increasing date order).
+# Drill / point-in-time recovery (specific generation):
+#   restore.sh request <full-ts> [<inc-ts> ...]
+#   restore.sh extract <full-ts> [<inc-ts> ...]
+#
+# Other:
+#   restore.sh latest    # show what auto-discovery would pick (no action)
+#   restore.sh list      # list everything in the bucket
 set -euo pipefail
 
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
@@ -25,11 +32,16 @@ RETRIEVAL_DAYS=${RETRIEVAL_DAYS:-7}            # how long the restored copy stay
 
 usage() {
     cat <<EOF
-Usage: $0 <command> <full-date> [<inc-date> ...]
+Usage: $0 <command> [<full-ts> [<inc-ts> ...]]
+
 Commands:
-  request   - issue restore-object requests for each part (async)
+  request   - issue restore-object requests (async, ~12-48 h)
+              no args: discover latest full + all newer incrementals (DR)
+              args   : use given timestamps (drill / PITR)
   extract   - download + extract once retrieval has completed
-  list      - show available backups
+              same arg pattern as request
+  latest    - show what auto-discovery would pick (no action)
+  list      - list everything in the bucket
 
 Available backups:
 EOF
@@ -54,16 +66,79 @@ cmd_list() {
     aws s3 ls "s3://${S3_BUCKET}/incremental/" --profile "$AWS_PROFILE" || true
 }
 
-cmd_request() {
-    [[ $# -lt 1 ]] && usage
+# Echo: latest full timestamp on first line, all newer incremental timestamps
+# on subsequent lines (chronological). ISO 8601 timestamps sort lexically.
+discover_latest_chain() {
+    local latest_full
+    latest_full=$(aws s3 ls "s3://$S3_BUCKET/full/" --profile "$AWS_PROFILE" \
+        | awk '{print $2}' | sed 's|/$||' | grep -v '^$' | sort | tail -1)
+    if [[ -z "$latest_full" ]]; then
+        echo "ERROR: no full backup found in s3://$S3_BUCKET/full/" >&2
+        return 1
+    fi
+    echo "$latest_full"
+    aws s3 ls "s3://$S3_BUCKET/incremental/" --profile "$AWS_PROFILE" \
+        | awk '{print $2}' | sed 's|/$||' | grep -v '^$' | sort \
+        | awk -v f="$latest_full" '$0 > f'
+}
+
+# Resolve args: 0 args → discover latest chain; otherwise args as-is.
+# Outputs: full on first line, incs on subsequent lines.
+resolve_chain() {
+    if [[ $# -eq 0 ]]; then
+        discover_latest_chain
+    else
+        for arg in "$@"; do echo "$arg"; done
+    fi
+}
+
+print_chain_summary() {
     local full=$1; shift
     local incs=("$@")
+    echo "Restore chain:"
+    echo "  full/$full"
+    for d in "${incs[@]}"; do
+        [[ -n "$d" ]] && echo "  incremental/$d"
+    done
+    echo
+    echo "Total: 1 full + ${#incs[@]} incremental"
+}
+
+cmd_latest() {
+    local chain
+    chain=$(discover_latest_chain) || exit 1
+    local full
+    full=$(echo "$chain" | head -1)
+    local incs
+    readarray -t incs < <(echo "$chain" | tail -n +2 | grep -v '^$')
+
+    print_chain_summary "$full" "${incs[@]}"
+    echo
+    echo "Disaster recovery:"
+    echo "  $0 request          # kick off Glacier retrieval"
+    echo "  $0 extract          # after 12-48h, download + extract"
+}
+
+cmd_request() {
+    local chain
+    chain=$(resolve_chain "$@") || exit 1
+    local full
+    full=$(echo "$chain" | head -1)
+    local incs
+    readarray -t incs < <(echo "$chain" | tail -n +2 | grep -v '^$')
+
+    print_chain_summary "$full" "${incs[@]}"
+    echo "Tier: $RETRIEVAL_TIER ($([[ "$RETRIEVAL_TIER" == "Bulk" ]] && echo "~48h, \$0.0025/GB" || echo "~12h, \$0.02/GB"))"
+    echo "Days: $RETRIEVAL_DAYS (how long the thawed copy stays accessible)"
+    echo
 
     local prefixes=("full/$full")
-    for d in "${incs[@]}"; do prefixes+=("incremental/$d"); done
+    for d in "${incs[@]}"; do
+        [[ -n "$d" ]] && prefixes+=("incremental/$d")
+    done
 
     for p in "${prefixes[@]}"; do
-        echo "Requesting retrieval under: $p ($RETRIEVAL_TIER)"
+        echo "Requesting retrieval under: $p"
         list_keys_under "$p/" | while read -r key; do
             aws s3api restore-object \
                 --bucket "$S3_BUCKET" \
@@ -73,14 +148,23 @@ cmd_request() {
         done
     done
     echo
-    echo "Retrieval initiated. With Tier=$RETRIEVAL_TIER, expect ~12h (Standard) or ~48h (Bulk)."
-    echo "Re-run with: $0 extract $full ${incs[*]}"
+    echo "Retrieval initiated. Verify with:"
+    echo "  aws s3api head-object --bucket $S3_BUCKET --key full/$full/part_000 --query Restore --profile $AWS_PROFILE"
+    echo "Then re-run: $0 extract$([[ $# -gt 0 ]] && echo " ${@}")"
 }
 
 cmd_extract() {
-    [[ $# -lt 1 ]] && usage
-    local full=$1; shift
-    local incs=("$@")
+    local chain
+    chain=$(resolve_chain "$@") || exit 1
+    local full
+    full=$(echo "$chain" | head -1)
+    local incs
+    readarray -t incs < <(echo "$chain" | tail -n +2 | grep -v '^$')
+
+    print_chain_summary "$full" "${incs[@]}"
+    echo "Restore staging: $RESTORE_DIR"
+    echo "Restore target:  $TARGET_DIR"
+    echo
 
     mkdir -p "$RESTORE_DIR" "$TARGET_DIR"
 
@@ -89,6 +173,7 @@ cmd_extract() {
         --recursive --profile "$AWS_PROFILE"
 
     for inc in "${incs[@]}"; do
+        [[ -z "$inc" ]] && continue
         echo "==> Download: incremental/$inc"
         aws s3 cp "s3://${S3_BUCKET}/incremental/${inc}/" "${RESTORE_DIR}/inc_${inc}/" \
             --recursive --profile "$AWS_PROFILE"
@@ -101,6 +186,7 @@ cmd_extract() {
         | tar -ixvf - -C "$TARGET_DIR"
 
     for inc in "${incs[@]}"; do
+        [[ -z "$inc" ]] && continue
         echo "==> Extract incremental $inc"
         cat "${RESTORE_DIR}/inc_${inc}"/part_* \
             | tar -ixvf - -C "$TARGET_DIR"
@@ -109,20 +195,21 @@ cmd_extract() {
     echo
     echo "Filesystem restored to: $TARGET_DIR"
     echo
-    echo "Now restore PostgreSQL (the latest dump from the most recent backup):"
+    echo "Restore PostgreSQL with the most recent dump:"
     LATEST_DUMP=$(ls -1 "$TARGET_DIR"/db_*.sql 2>/dev/null | sort | tail -n1 || true)
     if [[ -n "$LATEST_DUMP" ]]; then
-        echo "  docker exec -i $PG_CONTAINER psql -U $PG_USER -d postgres < $LATEST_DUMP"
+        echo "  docker exec -i ${PG_CONTAINER:-immich_postgres} psql -U ${PG_USER:-postgres} -d postgres < $LATEST_DUMP"
     else
         echo "  (no db_*.sql found in $TARGET_DIR — check the extraction)"
     fi
     echo
-    echo "Then start Immich and re-run the thumbnail and transcoding jobs."
+    echo "Then start Immich and re-run the thumbnail / transcoding jobs."
 }
 
 case "$CMD" in
     request) cmd_request "$@" ;;
     extract) cmd_extract "$@" ;;
+    latest)  cmd_latest ;;
     list)    cmd_list ;;
     *)       usage ;;
 esac
