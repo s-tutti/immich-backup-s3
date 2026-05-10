@@ -139,7 +139,10 @@ cmd_request() {
 
     for p in "${prefixes[@]}"; do
         echo "Requesting retrieval under: $p"
-        list_keys_under "$p/" | while read -r key; do
+        # Skip manifest.json: it's stored as STANDARD (intentionally, so we
+        # can read it without thawing) and would error InvalidObjectState
+        # if we tried to restore-object it.
+        list_keys_under "$p/" | grep -v '/manifest\.json$' | while read -r key; do
             aws s3api restore-object \
                 --bucket "$S3_BUCKET" \
                 --key "$key" \
