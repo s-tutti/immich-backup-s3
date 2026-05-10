@@ -436,8 +436,10 @@ sudo -u immich -H /opt/immich-backup-s3/scripts/backup_incremental.sh
 
 ```bash
 # 管理マシン側 (admin AWS creds 使用)
-unset AWS_PROFILE
+# 順序が重要: 先に source で S3_BUCKET 等を取り込んでから AWS_PROFILE を unset。
+# 逆だと .env の export で AWS_PROFILE=immich-backup が再設定されてしまう。
 source /home/tutti/repos/immich-backup-s3/.env
+unset AWS_PROFILE
 
 aws s3 ls "s3://$S3_BUCKET/full/"
 aws s3 ls "s3://$S3_BUCKET/incremental/"
@@ -473,10 +475,12 @@ sudo -u immich -H bash -c "
 
 ### Phase 4: 取り出し完了の確認
 
-48h 経過後、各オブジェクトが取り出し済になっているか確認：
+48h 経過後、各オブジェクトが取り出し済になっているか確認（管理マシン側、新シェルでも自己完結するよう source も含む）：
 
 ```bash
-unset AWS_PROFILE
+source /home/tutti/repos/immich-backup-s3/.env
+unset AWS_PROFILE   # .env の AWS_PROFILE は runtime 用なので bootstrap/admin では消す
+
 aws s3api head-object --bucket "$S3_BUCKET" \
     --key "full/$FULL/part_000" \
     --query 'Restore' --output text
