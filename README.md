@@ -445,10 +445,13 @@ aws s3 ls "s3://$S3_BUCKET/full/"
 aws s3 ls "s3://$S3_BUCKET/incremental/"
 
 # 各 manifest の中身を確認（Standard クラスなので即読める）
-for prefix in $(aws s3 ls "s3://$S3_BUCKET/full/" | awk '{print $2}') \
-              $(aws s3 ls "s3://$S3_BUCKET/incremental/" | awk '{print $2}'); do
-    echo "=== $prefix ==="
-    aws s3 cp "s3://$S3_BUCKET/${prefix}manifest.json" - 2>/dev/null && echo
+for kind in full incremental; do
+    for prefix in $(aws s3 ls "s3://$S3_BUCKET/$kind/" | awk '{print $2}'); do
+        [[ -z "$prefix" ]] && continue
+        echo "=== $kind/$prefix ==="
+        aws s3 cp "s3://$S3_BUCKET/$kind/${prefix}manifest.json" -
+        echo
+    done
 done
 ```
 
