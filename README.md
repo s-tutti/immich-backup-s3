@@ -554,9 +554,12 @@ done
 復元先の専用ディレクトリを準備（live を絶対に汚染しないよう、`/mnt/hdd1` 以外の場所を強く推奨）：
 
 ```bash
-# 800 GB 程度の空きがあるパスを選ぶ。/mnt/hdd1 上に置くなら別ディレクトリ。
+# /mnt/hdd1 配下のサブディレクトリでも、別マウントのディスクでも、空き 800 GB あれば
+# どこでも OK。下の例は同じ HDD の /mnt/hdd1 配下に drill_target / drill_staging を
+# 作る形 (Immich live は /mnt/hdd1/{library,upload,profile,...} に並ぶので干渉しない)。
+# 別物理デバイスを使うなら例: /mnt/hdd2_drill_target, /mnt/ssd_drill_staging など。
 sudo install -d -o immich -g immich -m 0755 \
-    /mnt/hdd1_drill_target /mnt/hdd1_drill_staging
+    /mnt/hdd1/drill_target /mnt/hdd1/drill_staging
 ```
 
 tmux で展開（数時間かかる）：
@@ -565,8 +568,8 @@ tmux で展開（数時間かかる）：
 tmux new -s immich-drill
 sudo -u immich -H bash -c "
     source /opt/immich-backup-s3/.env
-    RESTORE_DIR=/mnt/hdd1_drill_staging \
-    TARGET_DIR=/mnt/hdd1_drill_target \
+    RESTORE_DIR=/mnt/hdd1/drill_staging \
+    TARGET_DIR=/mnt/hdd1/drill_target \
     /opt/immich-backup-s3/scripts/restore.sh extract '$FULL' '$INC1' '$INC2'
 "
 # Ctrl+b → d でデタッチして気長に待つ
@@ -575,7 +578,7 @@ sudo -u immich -H bash -c "
 完了後の予想構造：
 
 ```
-/mnt/hdd1_drill_target/
+/mnt/hdd1/drill_target/
 ├── library/
 ├── upload/
 ├── profile/
@@ -593,8 +596,8 @@ sudo -u immich -H bash -c "
 ```bash
 # 復元先
 echo "=== restored ==="
-sudo find /mnt/hdd1_drill_target -type f | wc -l
-sudo du -sh /mnt/hdd1_drill_target
+sudo find /mnt/hdd1/drill_target -type f | wc -l
+sudo du -sh /mnt/hdd1/drill_target
 
 # live (除外を反映)
 echo "=== live (in-scope only) ==="
@@ -615,13 +618,13 @@ sudo du -sb --exclude=thumbs --exclude=encoded-video --exclude=backups \
 
 ```bash
 # Phase 1-b と 1-d で touch したファイルが復元先に存在するか
-sudo ls -la /mnt/hdd1_drill_target/library/<file-from-1b>
-sudo ls -la /mnt/hdd1_drill_target/library/<file-from-1d>
+sudo ls -la /mnt/hdd1/drill_target/library/<file-from-1b>
+sudo ls -la /mnt/hdd1/drill_target/library/<file-from-1d>
 
 # sha256 が live と一致するか
-for f in /mnt/hdd1_drill_target/library/<file-from-1b> \
-         /mnt/hdd1_drill_target/library/<file-from-1d>; do
-    rel=${f#/mnt/hdd1_drill_target/}
+for f in /mnt/hdd1/drill_target/library/<file-from-1b> \
+         /mnt/hdd1/drill_target/library/<file-from-1d>; do
+    rel=${f#/mnt/hdd1/drill_target/}
     h1=$(sudo sha256sum "$f"             | awk '{print $1}')
     h2=$(sudo sha256sum "/mnt/hdd1/$rel" | awk '{print $1}')
     [[ "$h1" == "$h2" ]] && echo "OK:    $rel" || echo "MISMATCH: $rel"
@@ -634,8 +637,8 @@ done
 
 ```bash
 # 復元先からランダムに 5 ファイル選んで sha256 比較
-sudo find /mnt/hdd1_drill_target/library -type f | shuf -n 5 | while read f; do
-    rel=${f#/mnt/hdd1_drill_target/}
+sudo find /mnt/hdd1/drill_target/library -type f | shuf -n 5 | while read f; do
+    rel=${f#/mnt/hdd1/drill_target/}
     live="/mnt/hdd1/$rel"
     if [[ -f "$live" ]]; then
         h1=$(sudo sha256sum "$f"    | awk '{print $1}')
@@ -650,7 +653,7 @@ done
 #### 6-d. DB ダンプの構文確認
 
 ```bash
-LATEST_DUMP=$(sudo ls -t /mnt/hdd1_drill_target/db_*.sql | head -1)
+LATEST_DUMP=$(sudo ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
 echo "Latest dump: $LATEST_DUMP"
 
 sudo head -10 "$LATEST_DUMP"   # PostgreSQL ヘッダコメントが見える
@@ -663,8 +666,8 @@ sudo wc -l    "$LATEST_DUMP"   # 行数規模感
 #### 6-e. config ファイルの確認
 
 ```bash
-sudo cat /mnt/hdd1_drill_target/docker-compose.yml | head
-sudo cat /mnt/hdd1_drill_target/.env | head
+sudo cat /mnt/hdd1/drill_target/docker-compose.yml | head
+sudo cat /mnt/hdd1/drill_target/.env | head
 # → Immich の本番 docker-compose の中身が見えるはず
 ```
 
@@ -697,7 +700,7 @@ DB_DATA_LOCATION=./postgres             # ←変更
 # (他はそのまま)
 
 # Drill 用に:
-UPLOAD_LOCATION=/mnt/hdd1_drill_target
+UPLOAD_LOCATION=/mnt/hdd1/drill_target
 DB_DATA_LOCATION=./postgres-drill        # 新規空ディレクトリ。dumpを後で流し込む
 ```
 
@@ -763,7 +766,7 @@ sudo docker exec immich_postgres_drill pg_isready -U postgres
 #### 6+f. 復元した DB ダンプを drill Postgres に投入
 
 ```bash
-LATEST_DUMP=$(sudo ls -t /mnt/hdd1_drill_target/db_*.sql | head -1)
+LATEST_DUMP=$(sudo ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
 echo "Restoring: $LATEST_DUMP"
 
 # pg_dumpall は CREATE DATABASE 文を含むので、空 Postgres に流し込めば OK
@@ -825,7 +828,7 @@ sudo rm -rf /home/tutti/immich-app-drill
 
 ```bash
 # 復元先と staging を削除（S3 バックアップは絶対に消さない）
-sudo rm -rf /mnt/hdd1_drill_target /mnt/hdd1_drill_staging
+sudo rm -rf /mnt/hdd1/drill_target /mnt/hdd1/drill_staging
 
 # cron を復元
 sudo crontab -u immich /tmp/immich-cron.bak
@@ -854,7 +857,7 @@ sudo ls -la /mnt/hdd1/.backup_state/last_backup_time
 |---|---|
 | Phase 4 で `Restore` が `null` | `restore.sh request` 未実行か対象 key の指定漏れ。再リクエスト |
 | Phase 4 で `ongoing-request="true"` のまま 48h+ | AWS の遅延。普通もう少し待てば終わる。Standard ($0.02/GB) に切り替えて再リクエストする手も |
-| Phase 5 で `tar: Unexpected EOF` | チャンクの欠落 / ダウンロード破損。`/mnt/hdd1_drill_staging/` 配下のサイズが S3 上の sum と合うか確認 |
+| Phase 5 で `tar: Unexpected EOF` | チャンクの欠落 / ダウンロード破損。`/mnt/hdd1/drill_staging/` 配下のサイズが S3 上の sum と合うか確認 |
 | Phase 6-a でファイル数がドリル前と全然違う | 差分の concat 解釈失敗。`tar -i` フラグが付いているか `restore.sh` を確認 |
 | Phase 6-b で sha256 mismatch | 差分のファイル選別に問題。`find -newer` の判定がずれている可能性 |
 
