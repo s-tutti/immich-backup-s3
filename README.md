@@ -424,6 +424,58 @@ sudo -u immich -H bash -c "
 - `latest`：**DR で復元される世代の組み合わせ** だけ（=「今 request したら何が取れるか」のプレビュー）
 - `list`：**バケット内の全履歴を生で**（過去のフルや、旧フル系列の差分も含む）
 
+### リストア後に再生成すべきもの（除外していたファイルの復元）
+
+バックアップでは **`thumbs/`** `encoded-video/` **`backups/`** を除外しているので、リストア直後の Immich は「データは全部あるけどサムネが見えない / 動画の web 用エンコードが無い」状態になる。**Immich の管理画面からジョブを走らせて再生成** する。
+
+| ジョブ | 元データから再生成するもの | 必要度 |
+|---|---|---|
+| Library Scan | DB と FS の整合性確認・新規ファイル取り込み | ★★（最初に 1 回） |
+| Thumbnail Generation | `thumbs/` のサムネイル + プレビュー | **★★★（必須、無いと UI が全部欠ける）** |
+| Metadata Extraction | EXIF / 撮影日時 | ★★ |
+| Video Transcoding | `encoded-video/` の web 再生用 H.264 等 | ★★（無くても原本再生はできる） |
+| Face Detection | 顔の bounding box 検出 | ★★（人物機能使うなら） |
+| Facial Recognition | 検出済み顔のクラスタリング | ★★（Face Detection の後） |
+| Smart Search | CLIP embedding（自然言語検索用） | ★（一番重い、最後で OK） |
+
+**手順（Web UI）**：
+
+1. 管理者でログイン → ハンバーガー → **管理 (Administration)** → **ジョブ (Jobs)**
+2. 上の順序で各ジョブをキック
+   - **Thumbnail Generation だけ「すべて (All)」** で実行（既存のサムネが復元データに無いため）
+   - それ以外は **「不足分のみ (Missing)」** で OK（DB に残っているメタデータ等は再計算不要）
+
+**手順（API、CLI 一括）**：
+
+```bash
+IMMICH_HOST="http://localhost:2283"
+API_KEY="your-admin-api-key"   # Immich の admin ユーザー設定で発行
+
+# missing のみ実行 (force=false)
+for job in library thumbnailGeneration metadataExtraction videoConversion \
+           faceDetection facialRecognition smartSearch; do
+    curl -X PUT "$IMMICH_HOST/api/jobs/$job" \
+        -H "x-api-key: $API_KEY" \
+        -H "Content-Type: application/json" \
+        -d '{"command":"start","force":false}'
+    echo " $job started"
+done
+```
+
+**所要時間の目安**（500 GB 規模）：
+
+| ジョブ | 時間 |
+|---|---|
+| Thumbnail Generation | 数時間〜半日 |
+| Metadata Extraction | 数十分〜数時間 |
+| Video Transcoding | 半日〜数日（4K 動画多いと最重） |
+| Face Detection / Recognition | 数時間（GPU あれば速い） |
+| Smart Search (CLIP) | 数時間〜半日（GPU あれば速い） |
+
+CPU が忙しいなら Immich の管理画面で **Job Concurrency** を絞って並列度調整。
+
+`backups/` は何もしなくても OK（Immich が定期的に自分で DB ダンプを書く）。
+
 ## 復元ドリル（半年〜年 1 回推奨）
 
 「**バックアップが取れている**」と「**リストアが成功する**」は別物。S3 上のチャンクが本当に解凍可能なメディア + DB ダンプとして完成しているかを、**実際に別ディレクトリへ展開して live と照合する**作業が復元ドリル。
