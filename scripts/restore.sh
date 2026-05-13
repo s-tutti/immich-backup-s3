@@ -171,15 +171,20 @@ cmd_extract() {
 
     mkdir -p "$RESTORE_DIR" "$TARGET_DIR"
 
+    # --force-glacier-transfer: AWS CLI は DEEP_ARCHIVE / GLACIER 系の
+    # オブジェクトを (restore-object で thawed 済でも) デフォルトでスキップ
+    # するため、明示的に許可する必要がある。restored 期間中は実体は
+    # standard-class 相当でアクセスできるが、メタデータ上の storage class
+    # は GLACIER のまま。
     echo "==> Download: full/$full"
     aws s3 cp "s3://${S3_BUCKET}/full/${full}/" "${RESTORE_DIR}/full_${full}/" \
-        --recursive --profile "$AWS_PROFILE"
+        --recursive --force-glacier-transfer --profile "$AWS_PROFILE"
 
     for inc in "${incs[@]}"; do
         [[ -z "$inc" ]] && continue
         echo "==> Download: incremental/$inc"
         aws s3 cp "s3://${S3_BUCKET}/incremental/${inc}/" "${RESTORE_DIR}/inc_${inc}/" \
-            --recursive --profile "$AWS_PROFILE"
+            --recursive --force-glacier-transfer --profile "$AWS_PROFILE"
     done
 
     # The backup writer concatenates two tar archives per backup (media + db/config),
