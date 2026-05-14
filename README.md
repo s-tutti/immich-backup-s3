@@ -668,19 +668,25 @@ sudo du -sb --exclude=thumbs --exclude=encoded-video --exclude=backups \
 
 #### 6-b. Phase 1 で touch したファイルが正しく差分に乗っていたか
 
+> 注意：`/mnt/hdd1/library` や `upload` は Immich が `drwx------ immich immich` で
+> 作るため、admin ではないユーザーから `[[ -f ]]` で stat してもファイル不在
+> 扱いになる。**ループ全体を `sudo bash -c` でくるんで root として実行する**こと。
+
 ```bash
 # Phase 1-b と 1-d で touch したファイルが復元先に存在するか
 sudo ls -la /mnt/hdd1/drill_target/library/<file-from-1b>
 sudo ls -la /mnt/hdd1/drill_target/library/<file-from-1d>
 
 # sha256 が live と一致するか
+sudo bash -c '
 for f in /mnt/hdd1/drill_target/library/<file-from-1b> \
          /mnt/hdd1/drill_target/library/<file-from-1d>; do
     rel=${f#/mnt/hdd1/drill_target/}
-    h1=$(sudo sha256sum "$f"             | awk '{print $1}')
-    h2=$(sudo sha256sum "/mnt/hdd1/$rel" | awk '{print $1}')
+    h1=$(sha256sum "$f"             | awk "{print \$1}")
+    h2=$(sha256sum "/mnt/hdd1/$rel" | awk "{print \$1}")
     [[ "$h1" == "$h2" ]] && echo "OK:    $rel" || echo "MISMATCH: $rel"
 done
+'
 ```
 
 両方 OK なら、差分の連鎖（フル → 差分1 → 差分2）が正しく重ね合わせられて最新状態が再構築されている証拠。
@@ -688,19 +694,30 @@ done
 #### 6-c. ランダムサンプリングで内容比較
 
 ```bash
-# 復元先からランダムに 5 ファイル選んで sha256 比較
-sudo find /mnt/hdd1/drill_target/library -type f | shuf -n 5 | while read f; do
+# 復元先からランダムに 10 ファイル選んで sha256 比較
+# (6-b と同じ理由で sudo bash -c でループ全体を root 化)
+sudo bash -c '
+find /mnt/hdd1/drill_target/library -type f | shuf -n 10 | while read f; do
     rel=${f#/mnt/hdd1/drill_target/}
     live="/mnt/hdd1/$rel"
     if [[ -f "$live" ]]; then
-        h1=$(sudo sha256sum "$f"    | awk '{print $1}')
-        h2=$(sudo sha256sum "$live" | awk '{print $1}')
-        [[ "$h1" == "$h2" ]] && echo "OK: $rel" || echo "MISMATCH: $rel"
+        h1=$(sha256sum "$f"    | awk "{print \$1}")
+        h2=$(sha256sum "$live" | awk "{print \$1}")
+        [[ "$h1" == "$h2" ]] && echo "OK:          $rel" || echo "MISMATCH:    $rel"
     else
-        echo "ONLY-IN-RESTORE: $rel"  # 削除済みでも復元される＝想定済の挙動
+        echo "NOT-IN-LIVE: $rel"  # live で削除済 → 復元データには残る = 想定済の挙動
     fi
 done
+'
 ```
+
+期待値：
+
+- **`OK:`** が大半（10/10 が理想）
+- **`MISMATCH:`** が **0 件**（1 件でもあれば要調査）
+- **`NOT-IN-LIVE:`** は数件あっても OK（バックアップ後に Immich で削除されたファイル）
+
+なお、`live` 側のファイル数 > `restored` 側のファイル数 になるのも正常（バックアップ取得後に追加されたファイルは復元データに無い）。逆（restored が多い）は孤児ファイルなので想定内（design.md 9.1 参照）。
 
 #### 6-d. DB ダンプの構文確認
 
