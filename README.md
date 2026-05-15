@@ -424,6 +424,114 @@ sudo -u immich -H bash -c "
 - `latest`：**DR で復元される世代の組み合わせ** だけ（=「今 request したら何が取れるか」のプレビュー）
 - `list`：**バケット内の全履歴を生で**（過去のフルや、旧フル系列の差分も含む）
 
+### 復元したファイルを Immich に取り込む手順（DR 本番）
+
+`restore.sh extract` で `$TARGET_DIR`（既定 `/mnt/hdd1_restored`、ドリルでは `/mnt/hdd1/drill_target`）に以下が展開された状態：
+
+```
+$TARGET_DIR/
+├── library/                  ← オリジナル写真・動画
+├── upload/                   ← 同上
+├── profile/                  ← アバター
+├── db_<TS_最新>.sql           ← 最新の DB ダンプ（実際に流し込むのはコレ）
+├── db_<TS_中間>.sql           ← 古い世代の DB ダンプ（無視）
+├── db_<TS_フル>.sql           ← 同上
+├── docker-compose.yml        ← 復元元の構成
+└── .env                      ← 復元元の環境変数
+```
+
+ここから Immich を起動・稼働させる手順は以下：
+
+#### 1. live の postgres データを **持ち込まない** で Immich をセットアップ
+
+> ⚠️ **重要**：DR で別マシンに復元する場合・既存環境を作り直す場合・ドリルで別 compose を立てる場合、いずれも **既存の `postgres/` データディレクトリを流用してはいけない**。S3 dump を流し込むには **空の PostgreSQL データディレクトリ** が必要（pg_dumpall は `CREATE DATABASE` から含む）。
+>
+> 既存環境を流用する旧 `postgres/` データがあれば消すか、新しいパスに切り替える：
+>
+> ```bash
+> # 例1: live 環境を再構築する場合（live はもう死んでいる前提）
+> sudo rm -rf /home/tutti/immich-app/postgres
+> sudo install -d -o immich -g immich /home/tutti/immich-app/postgres   # 空に
+>
+> # 例2: 別ディレクトリを使う場合、.env で切り替え
+> # DB_DATA_LOCATION=./postgres-restored
+> sudo install -d -o immich -g immich /home/tutti/immich-app/postgres-restored
+> ```
+
+#### 2. docker-compose.yml と .env を取り戻す（or 既存を流用）
+
+復元データの `$TARGET_DIR/docker-compose.yml` と `$TARGET_DIR/.env` は **バックアップ取得時点の構成**。Immich のバージョンアップ等で live と差分があるかもしれないので、`diff` で確認してから採用するか既存を温存するか判断：
+
+```bash
+sudo diff /home/tutti/immich-app/docker-compose.yml "$TARGET_DIR/docker-compose.yml"
+sudo diff /home/tutti/immich-app/.env              "$TARGET_DIR/.env"
+```
+
+新規セットアップなら復元データのものをそのまま採用：
+
+```bash
+sudo cp "$TARGET_DIR/docker-compose.yml" /home/tutti/immich-app/
+sudo cp "$TARGET_DIR/.env"              /home/tutti/immich-app/
+```
+
+ただし `.env` の `UPLOAD_LOCATION` は復元したメディアの実体（後述）を指すように調整。
+
+#### 3. メディアを `UPLOAD_LOCATION` に配置
+
+`$TARGET_DIR/{library,upload,profile}/` を Immich の `UPLOAD_LOCATION`（通常 `/mnt/hdd1`）にそのまま展開：
+
+```bash
+# 例: UPLOAD_LOCATION=/mnt/hdd1 で運用する場合
+sudo mv "$TARGET_DIR/library"  /mnt/hdd1/
+sudo mv "$TARGET_DIR/upload"   /mnt/hdd1/
+sudo mv "$TARGET_DIR/profile"  /mnt/hdd1/
+sudo chown -R immich:immich /mnt/hdd1/{library,upload,profile}
+```
+
+または `UPLOAD_LOCATION` 自体を `$TARGET_DIR` に向けてしまう（手抜きルート、ドリルで便利）：
+
+```bash
+# Immich の .env で:
+# UPLOAD_LOCATION=/mnt/hdd1/drill_target
+```
+
+#### 4. Postgres を空起動 → dump を流し込む
+
+`postgres/` が空の状態で Immich を起動すると、コンテナが初期化スクリプトを走らせて空の DB ができる。その後 dump を流し込む：
+
+```bash
+cd /home/tutti/immich-app
+sudo docker compose up -d postgres            # postgres だけ先に起動
+sleep 10
+sudo docker exec immich_postgres pg_isready -U postgres   # ready 待ち
+
+# 最新の dump を選んで投入 (pg_dumpall は CREATE DATABASE 含むので空 DB OK)
+LATEST_DUMP=$(sudo ls -t "$TARGET_DIR"/db_*.sql | head -1)
+sudo docker exec -i immich_postgres psql -U postgres < "$LATEST_DUMP"
+```
+
+#### 5. Immich の他コンテナを起動
+
+```bash
+sudo docker compose up -d
+sudo docker compose logs -f immich-server | head -50   # 起動ログを確認
+```
+
+`http://<server>:2283` でアクセスして、復元前と同じユーザー ID / パスワードでログインできれば成功（DB がちゃんと復元されてる証拠）。
+
+#### 6. （任意）バックアップ用 marker と snapshot をリセット
+
+復元直後は live と marker のタイムスタンプがずれている。次回 cron 差分が走るときに「全データが新しい扱い」になって巨大な差分が出るのを避けたければ：
+
+```bash
+# 復元直後にフルバックアップを 1 回手動で取って、marker を最新化
+sudo -u immich -H /opt/immich-backup-s3/scripts/backup_full.sh
+```
+
+これで以降の差分は通常通り。
+
+#### 7. 除外していたファイルを再生成 → 次のセクションへ
+
 ### リストア後に再生成すべきもの（除外していたファイルの復元）
 
 バックアップでは **`thumbs/`** `encoded-video/` **`backups/`** を除外しているので、リストア直後の Immich は「データは全部あるけどサムネが見えない / 動画の web 用エンコードが無い」状態になる。**Immich の管理画面からジョブを走らせて再生成** する。
@@ -746,13 +854,32 @@ sudo cat /mnt/hdd1/drill_target/.env | head
 
 #### 6+a. Drill 用の docker-compose ディレクトリを作る
 
-live の compose ディレクトリを丸ごとコピーしていじる：
+live の compose ディレクトリから **`postgres/` 配下を除外して** コピーする。
+`postgres/` は live の PostgreSQL データファイル群（テーブルファイル、WAL 等）
+で、drill 側では空 DB に S3 からの dump を流し込むので **不要**。むしろ
+live の DB ファイルを drill 側にコピーしてしまうと、
+
+- 数十 GB の無駄な disk 使用
+- live postgres が書き込み中の途中状態をコピーすることになり、ファイルが
+  inconsistent になる可能性
+- I/O 競合で live Immich がアクセス重くなる
+
+ので明示的に除外する。
 
 ```bash
-# live を真似してコピー (live は /home/tutti/immich-app/ の前提)
-sudo cp -r /home/tutti/immich-app /home/tutti/immich-app-drill
+# rsync で postgres/ を除外コピー (live は /home/tutti/immich-app/ の前提)
+sudo rsync -a --exclude='postgres/' --exclude='postgres-*/' \
+    /home/tutti/immich-app/ /home/tutti/immich-app-drill/
 cd /home/tutti/immich-app-drill
+
+# 確認: docker-compose.yml と .env は来ていて、postgres/ は無い状態
+ls -la
+# 期待: docker-compose.yml, .env, (その他 yml ファイルがあれば) のみ
 ```
+
+> もし `cp -r` で既にコピーしてしまった場合は、`sudo rm -rf
+> /home/tutti/immich-app-drill/postgres` で live 由来の DB データを削除して
+> から続ける。
 
 #### 6+b. .env を drill 用に書き換え
 
