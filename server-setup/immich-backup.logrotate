@@ -1,0 +1,22 @@
+# /etc/logrotate.d/immich-backup
+# Rotate the cron-driven backup log. Installed by README's setup steps.
+#
+# - weekly: backup itself is weekly, so this aligns with the cadence.
+# - rotate 12: ~3 months of history (12 weeks).
+# - compress / delaycompress: keep the most recent rotated file uncompressed
+#   for quick tail/grep, gzip the rest.
+# - missingok / notifempty: a quiet week (no cron output) is not an error.
+# - create: ensure the new file is owned by immich, matching the original
+#   permissions set up in README "B. 権限の整備".
+# - su: run rotation as immich:immich (logrotate default is root:root which
+#   would mismatch the parent dir's intended ownership semantics).
+/var/log/immich-backup.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 immich immich
+    su immich immich
+}

@@ -60,4 +60,6 @@ prune_old_db_dumps 3
 # Best-effort cleanup of expired old fulls (don't fail the backup if it errors).
 "$SCRIPT_DIR/cleanup_old_full.sh" "$DATE" || true
 
-notify "full" "$DATE" "$PARTS" "SUCCESS"
+# || true: a Slack-side blip shouldn't turn a successful backup into a cron
+# "failure" (the data is safely on S3 by this point).
+notify "full" "$DATE" "$PARTS" "SUCCESS" || true

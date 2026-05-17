@@ -264,6 +264,24 @@ sudo crontab -u immich -l   # 確認
 
 ログは `/var/log/immich-backup.log`（**B. 権限の整備** で immich 所有・0644 で作成済み）。
 
+logrotate を登録して weekly でローテーション（`rotate 12` = 約3か月保持、gzip 圧縮）:
+
+```bash
+sudo install -m 0644 -o root -g root \
+    /opt/immich-backup-s3/server-setup/immich-backup.logrotate \
+    /etc/logrotate.d/immich-backup
+sudo logrotate --debug /etc/logrotate.d/immich-backup   # syntax 検証 (実ローテーションはしない)
+```
+
+クライアント証明書（IAM Roles Anywhere 用、デフォルト 1 年有効）の自動更新も同時に登録する。root crontab に入れる（CA 秘密鍵 `/etc/aws/ca-key.pem` が root 0600 のため）：
+
+```bash
+sudo crontab -u root /opt/immich-backup-s3/cron/immich-cert-renew.crontab
+sudo crontab -u root -l   # 確認
+```
+
+毎月 1 日 04:00 に `scripts/renew_client_cert.sh` が走り、残 60 日以下なら同じ CA で再発行 + Slack に :sparkles:。動作確認は `sudo FORCE=1 /opt/immich-backup-s3/scripts/renew_client_cert.sh` で。
+
 ### 6. (任意) GitHub Actions 自動デプロイを有効化
 
 self-hosted runner を同じ Ubuntu サーバーに置いて、main 更新を自動で `/opt/immich-backup-s3/` に同期 + AWS リソース更新まで一気通貫にできる。`scripts/` や `aws-setup/` の改変を `git push` だけで反映できるようになる。
@@ -356,11 +374,15 @@ cron は **5. cron 登録** ですでに登録済みのはず。`/opt/immich-bac
 ## 運用メモ
 
 - **死活監視**: 毎日 04:00 UTC（13:00 JST）に Lambda が S3 をチェック。最新フル/差分が閾値（フル 200日 / 差分 8日）を超えていれば Slack に :rotating_light: を投げる。閾値は Lambda の環境変数 `FULL_MAX_AGE_DAYS` / `INCREMENTAL_MAX_AGE_DAYS` で変更可。**Slack 通知は ALERT 時のみ。ただし月曜は週次サマリとして OK 時も投稿する**（バックアップは日曜実行なので、月曜の通知が直近の生存確認になる。火〜土はサイレント実行で Lambda / Scheduler 自体の死活確認のみ）。
-- **バックアップ通知**: 各バックアップスクリプトが完了/失敗時に Slack へ通知（バックアップサーバー由来）。
+- **バックアップ通知**: 各バックアップスクリプトが完了/失敗時に Slack へ通知（バックアップサーバー由来）。SUCCESS 通知の Slack 投稿は `|| true` で握りつぶしているので、Slack 側の一時障害が「バックアップ失敗」扱いにならない（データは S3 まで届いている）。
+- **並行実行ガード**: cron 側で `flock -n /tmp/immich-backup.lock` を被せている。`1/1` か `7/1` が日曜になると full と incremental が同時刻に走るが、その場合は full が先にロックを取り、その回の incremental は何もせず終了する（意図通り）。
+- **クライアント証明書の自動更新**: `cron/immich-cert-renew.crontab` を root の crontab に登録すると、毎月 1 日 04:00 に `scripts/renew_client_cert.sh` が走り、IAM Roles Anywhere 用クライアント証明書の残日数を点検する。60 日以下なら同じ CA（`/etc/aws/ca-*.pem`）で再発行（既定 730 日有効）+ Slack に :sparkles:。Trust Anchor は CA に紐付くので AWS 側の再登録は不要。失敗時は :rotating_light:。手動で試したい時は `sudo FORCE=1 /opt/immich-backup-s3/scripts/renew_client_cert.sh`。
+- **証明書失効時の検知経路**: 万一更新を逃して失効した場合でも、次回 cron でバックアップが走った時に `aws s3 cp` が認証失敗 → スクリプト内 `trap on_error` が Slack に FAILED を投げる（webhook は AWS 認証を使わないので機能する）。さらに 8 日以内に Lambda 監視も :rotating_light: を出す。
 - **旧フル削除**: フル成功後に `cleanup_old_full.sh` が `manifest.json` の LastModified を見て **190日以上経過したフル prefix** を削除（Glacier Deep Archive 最低保存期間 180日 + 10日バッファ）。
 - **不完全マルチパート**: ライフサイクルで 7 日後に自動破棄（課金事故防止）。
 - **整合性**: バックアップ間で DB と メディアが完全に同期しているわけではない（孤児ファイル可能性）。許容方針。
 - **スナップショット保護**: `snapshot.snar` を失うと差分連鎖が壊れるので、毎バックアップ後に `.bak` をローカルに作っている。
+- **journald の上限**: GitHub Actions self-hosted runner や cert renew 等のログは systemd-journald に流れる。デフォルトは無制限なので、初期セットアップで `sudo journalctl --vacuum-size=1G` 程度に絞っておくか、`/etc/systemd/journald.conf` に `SystemMaxUse=1G` を設定しておくとディスクを食い潰さない。`journalctl --disk-usage` で現状確認できる。
 
 ## リストア
 

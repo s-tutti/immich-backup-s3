@@ -7,16 +7,22 @@
 #
 # Note: the log file must be writable by the cron user. One-time setup:
 #   sudo install -o immich -g immich -m 0644 /dev/null /var/log/immich-backup.log
+#
+# Concurrent-run guard: `flock -n /tmp/immich-backup.lock` ensures only one
+# backup runs at a time. If 1/1 or 7/1 falls on a Sunday, both `full` and
+# `incremental` would otherwise fire at 03:00 and corrupt each other's
+# $BACKUP_TMPDIR/part_* files. With flock the full grabs the lock first and
+# the incremental that minute is silently skipped (intentional — the full
+# already covers everything the incremental would have).
+# /tmp is writable by the immich user and flock auto-creates the lock file.
 
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LOG=/var/log/immich-backup.log
+LOCK=/tmp/immich-backup.lock
 
 # Full backup: 1/1 and 7/1 at 03:00 local.
-0 3 1 1,7 * /opt/immich-backup-s3/scripts/backup_full.sh        >> $LOG 2>&1
+0 3 1 1,7 * /usr/bin/flock -n $LOCK /opt/immich-backup-s3/scripts/backup_full.sh        >> $LOG 2>&1
 
 # Incremental: every Sunday at 03:00 local.
-# (Skip the Sunday that immediately follows a full to avoid noise; both running
-# the same week is harmless thanks to the snapshot file, but the full leaves
-# nothing for the incremental to do.)
-0 3 * * 0   /opt/immich-backup-s3/scripts/backup_incremental.sh >> $LOG 2>&1
+0 3 * * 0   /usr/bin/flock -n $LOCK /opt/immich-backup-s3/scripts/backup_incremental.sh >> $LOG 2>&1

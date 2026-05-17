@@ -1,0 +1,19 @@
+# Monthly IAM Roles Anywhere client cert health check + auto-renewal.
+# Runs as root (needs read access to /etc/aws/ca-key.pem, 0600 root).
+#
+# Install with:
+#   sudo crontab -u root /opt/immich-backup-s3/cron/immich-cert-renew.crontab
+# Verify:
+#   sudo crontab -u root -l
+#
+# Behavior (see scripts/renew_client_cert.sh for details):
+#   - cert > 60d from expiry → silent (logs to $LOG only)
+#   - cert ≤ 60d from expiry → renews + posts :sparkles: to Slack
+#   - any failure            → posts :rotating_light: to Slack
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/immich-backup.log
+
+# 1st of every month at 04:00 local.
+0 4 1 * * /opt/immich-backup-s3/scripts/renew_client_cert.sh >> $LOG 2>&1

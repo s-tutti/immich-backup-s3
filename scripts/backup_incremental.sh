@@ -58,4 +58,6 @@ cleanup_tmp
 # Keep only the 3 most recent db_*.sql in $BACKUP_TMPDIR.
 prune_old_db_dumps 3
 
-notify "incremental" "$DATE" "$PARTS" "SUCCESS"
+# || true: a Slack-side blip shouldn't turn a successful backup into a cron
+# "failure" (the data is safely on S3 by this point).
+notify "incremental" "$DATE" "$PARTS" "SUCCESS" || true
