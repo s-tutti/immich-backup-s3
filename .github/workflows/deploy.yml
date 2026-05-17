@@ -39,8 +39,9 @@ jobs:
           # server-setup/04_install_github_runner.sh).
           # --exclude paths are preserved on the destination across deploys
           # — that's how /opt/immich-backup-s3/.env survives.
+          # .git/ is intentionally synced (shallow, ~tens of KB) so that
+          # `git -C $DEPLOY_TARGET rev-parse HEAD` reports the deployed commit.
           rsync -a --delete \
-            --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.env' \
             --exclude='*.log' \

@@ -104,8 +104,16 @@ sudo -u immich -H git clone \
     /opt/immich-backup-s3
 ```
 
-以降は Actions が main 更新を自動で `/opt/immich-backup-s3/` に rsync する。
-Actions が壊れた時の手動フォールバックは：
+以降は Actions が main 更新を自動で `/opt/immich-backup-s3/` に rsync する。`.git/` も同期対象（runner 側が `actions/checkout@v4` の既定で shallow なので数十KB）。デプロイ済みの commit は `git -C /opt/immich-backup-s3 rev-parse HEAD` で確認可。
+
+Actions が壊れた時の手動フォールバック。Actions 経由のデプロイ後は `.git/` が shallow になっているので、`pull` ではなく `fetch --depth=1` + `reset --hard` でリモート HEAD に合わせる：
+
+```bash
+sudo -u immich -H git -C /opt/immich-backup-s3 fetch --depth=1 origin main
+sudo -u immich -H git -C /opt/immich-backup-s3 reset --hard origin/main
+```
+
+初回ブートストラップ直後（フル clone のまま、まだ Actions が走っていない時）は素直に `pull` でも OK：
 
 ```bash
 sudo -u immich -H git -C /opt/immich-backup-s3 pull
