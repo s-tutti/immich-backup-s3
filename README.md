@@ -950,46 +950,77 @@ sudo grep -E 'container_name|2283|UPLOAD' /home/tutti/immich-app-drill/docker-co
 sudo install -d -o immich -g immich -m 0755 /home/tutti/immich-app-drill/postgres-drill
 ```
 
-#### 6+e. Drill コンテナ起動（compose project 名を分けて namespace 隔離）
+#### 6+e. Drill Postgres を先行起動（**immich-server は起動しない！**）
+
+> ⚠️ **重要**: `docker compose up -d` でいきなり全コンテナ起動すると、immich-server が空 DB に **migrations を自動実行して schema を作ってしまう**。その後 dump を流し込んでも `already exists` エラーが連発し、データは 1 件も入らない。
+>
+> 正しい順序は **「postgres だけ起動 → 空 DB を確実にしてから dump 投入 → 後で残りを起動」**。
 
 ```bash
 cd /home/tutti/immich-app-drill
-sudo docker compose -p immich-drill up -d
-```
 
-`-p immich-drill` でプロジェクト名（= ネットワーク名空間）を分離。live 側 (`immich`) と完全に分離されたコンテナ群として起動。
+# Postgres と Redis だけ起動。immich-server / ML はまだ起動しない。
+sudo docker compose -p immich-drill up -d database redis
 
-確認：
-
-```bash
-sudo docker ps | grep drill
-# immich_server_drill, immich_postgres_drill, immich_redis_drill が Up になっているはず
-
-# postgres が起動完了しているか
+# Postgres ready 待ち
+sleep 10
 sudo docker exec immich_postgres_drill pg_isready -U postgres
+# → "/var/run/postgresql:5432 - accepting connections" が出れば OK
 ```
+
+`-p immich-drill` でプロジェクト名（= 独立した bridge network）を分離。live 側 (`immich-app`) と完全に分離されたコンテナ群として起動。
 
 #### 6+f. 復元した DB ダンプを drill Postgres に投入
 
+`docker-entrypoint` が `POSTGRES_DB=immich` の指定で空 `immich` DB を自動作成しているが、`pg_dumpall` の dump も `CREATE DATABASE immich;` を含むので、**先に空 DB を DROP して衝突を避ける**：
+
 ```bash
-# drill_target は tar 展開で 0700 immich を継承していて tutti から listing
-# できないことがある (glob 展開が失敗する)。
-# ls / docker exec / psql 全部を root として実行するよう sudo bash -c で囲う。
+# 1. 自動作成された空の immich DB を drop (これから dump の CREATE DATABASE で作り直す)
+sudo docker exec immich_postgres_drill psql -U postgres -c 'DROP DATABASE IF EXISTS immich;'
+
+# 2. dump を流し込む
+# drill_target は tar 展開で 0700 immich を継承していて tutti から listing できないことがあるので
+# ls / glob / docker exec / psql 全部を root として実行するよう sudo bash -c で囲う。
 sudo bash -c '
 LATEST_DUMP=$(ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
 echo "Restoring: $LATEST_DUMP"
-
-# pg_dumpall は CREATE DATABASE 文を含むので、空 Postgres に流し込めば OK
-docker exec -i immich_postgres_drill psql -U postgres < "$LATEST_DUMP"
+docker exec -i immich_postgres_drill psql -U postgres < "$LATEST_DUMP" 2>&1 | tail -20
 '
 ```
 
-エラーが出ずに完了すれば、live の DB と同じ内容が drill 側に再現された状態。
+成功時の典型的な末尾：
 
-#### 6+g. immich-server を再起動して DB を読み直させる
+```
+... 
+ALTER DATABASE
+... (CREATE TABLE / COPY / ALTER 系が大量に流れる)
+You are now connected to database "postgres" as user "postgres".
+SET
+SET
+```
+
+`ERROR: role "postgres" already exists` は無害（postgres はデフォルト superuser なので元から存在）。それ以外の `already exists` / `multiple primary keys` / `FK violation` が **大量に出るなら投入失敗**。空 DB に対する流し込みになっていない（schema が事前に存在している）状態なので、6+e の immich-server が起動していないか確認＆postgres-drill を rm -rf してやり直し。
+
+データが入ったか確認：
 
 ```bash
-sudo docker compose -p immich-drill restart immich-server
+sudo docker exec immich_postgres_drill psql -U postgres -d immich -c '
+SELECT
+    (SELECT COUNT(*) FROM "user") AS users,
+    (SELECT COUNT(*) FROM asset) AS assets,
+    (SELECT COUNT(*) FROM album) AS albums
+'
+```
+
+`assets` が live のファイル数に近い値（ドリル時点の差分まで反映した状態）で出れば成功。
+
+#### 6+g. 残りのコンテナを起動
+
+これで DB がそろったので immich-server / ML を起動：
+
+```bash
+sudo docker compose -p immich-drill up -d
+# immich-server / ML が新規に起動、database / redis は既に動いているので no-op
 ```
 
 数十秒待ってログ確認：
