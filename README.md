@@ -355,7 +355,7 @@ cron は **5. cron 登録** ですでに登録済みのはず。`/opt/immich-bac
 
 ## 運用メモ
 
-- **死活監視**: 毎日 04:00 UTC（13:00 JST）に Lambda が S3 を見て、最新フル/差分が閾値（フル 200日 / 差分 8日）以内になければ Slack に :rotating_light: を投げる。閾値は Lambda の環境変数 `FULL_MAX_AGE_DAYS` / `INCREMENTAL_MAX_AGE_DAYS` で変更可。
+- **死活監視**: 毎日 04:00 UTC（13:00 JST）に Lambda が S3 をチェック。最新フル/差分が閾値（フル 200日 / 差分 8日）を超えていれば Slack に :rotating_light: を投げる。閾値は Lambda の環境変数 `FULL_MAX_AGE_DAYS` / `INCREMENTAL_MAX_AGE_DAYS` で変更可。**Slack 通知は ALERT 時のみ。ただし月曜は週次サマリとして OK 時も投稿する**（バックアップは日曜実行なので、月曜の通知が直近の生存確認になる。火〜土はサイレント実行で Lambda / Scheduler 自体の死活確認のみ）。
 - **バックアップ通知**: 各バックアップスクリプトが完了/失敗時に Slack へ通知（バックアップサーバー由来）。
 - **旧フル削除**: フル成功後に `cleanup_old_full.sh` が `manifest.json` の LastModified を見て **190日以上経過したフル prefix** を削除（Glacier Deep Archive 最低保存期間 180日 + 10日バッファ）。
 - **不完全マルチパート**: ライフサイクルで 7 日後に自動破棄（課金事故防止）。

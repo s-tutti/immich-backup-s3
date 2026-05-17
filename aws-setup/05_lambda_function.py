@@ -122,6 +122,18 @@ def lambda_handler(event, context):
         )
 
     msg = f"{head}\n{body}\n```\n{inventory}\n```"
-    post_slack(msg)
 
-    return {"status": "alert" if issues else "ok", "issues": issues}
+    # Notify on every ALERT, plus a weekly "OK" digest on Mondays.
+    # Backups run Sunday 03:00 JST; Monday 04:00 UTC (= 13:00 JST) is the first
+    # check after a successful run. The daily silent runs still verify that the
+    # Lambda + Scheduler themselves are alive.
+    is_monday = now.weekday() == 0
+    notified = bool(issues) or is_monday
+    if notified:
+        post_slack(msg)
+
+    return {
+        "status": "alert" if issues else "ok",
+        "issues": issues,
+        "notified": notified,
+    }
