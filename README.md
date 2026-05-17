@@ -972,11 +972,16 @@ sudo docker exec immich_postgres_drill pg_isready -U postgres
 #### 6+f. 復元した DB ダンプを drill Postgres に投入
 
 ```bash
-LATEST_DUMP=$(sudo ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
+# drill_target は tar 展開で 0700 immich を継承していて tutti から listing
+# できないことがある (glob 展開が失敗する)。
+# ls / docker exec / psql 全部を root として実行するよう sudo bash -c で囲う。
+sudo bash -c '
+LATEST_DUMP=$(ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
 echo "Restoring: $LATEST_DUMP"
 
 # pg_dumpall は CREATE DATABASE 文を含むので、空 Postgres に流し込めば OK
-sudo docker exec -i immich_postgres_drill psql -U postgres < "$LATEST_DUMP"
+docker exec -i immich_postgres_drill psql -U postgres < "$LATEST_DUMP"
+'
 ```
 
 エラーが出ずに完了すれば、live の DB と同じ内容が drill 側に再現された状態。
