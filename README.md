@@ -830,12 +830,22 @@ done
 #### 6-d. DB ダンプの構文確認
 
 ```bash
-LATEST_DUMP=$(sudo ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
+# drill_target は tar 展開で source 側の権限 (0700 immich) を継承していて
+# tutti から listing できないことがある (glob 展開が失敗する)。
+# sudo bash -c でループ全体を root 化するのが確実。
+sudo bash -c '
+LATEST_DUMP=$(ls -t /mnt/hdd1/drill_target/db_*.sql | head -1)
 echo "Latest dump: $LATEST_DUMP"
-
-sudo head -10 "$LATEST_DUMP"   # PostgreSQL ヘッダコメントが見える
-sudo tail -5  "$LATEST_DUMP"   # \connect postgres で終わっているか
-sudo wc -l    "$LATEST_DUMP"   # 行数規模感
+echo ""
+echo "=== head ==="
+head -10 "$LATEST_DUMP"   # PostgreSQL ヘッダコメントが見える
+echo ""
+echo "=== tail ==="
+tail -5 "$LATEST_DUMP"    # \connect postgres で終わっているか
+echo ""
+echo "size:  $(du -h "$LATEST_DUMP" | awk "{print \$1}")"
+echo "lines: $(wc -l < "$LATEST_DUMP")"
+'
 ```
 
 実際に psql で投入して整合性まで確認したいなら、別 PostgreSQL コンテナを立てて流し込む（リソース余裕がある時のみ）。
